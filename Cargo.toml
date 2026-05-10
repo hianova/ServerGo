@@ -1,0 +1,18 @@
+[package]
+name = "ServerGo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dualcache-ff = { path = "deps/DualCache-FF" }
+io_oi_core = { path = "deps/io_oi/io_oi_core" }
+cdDB = { path = "deps/cdDB" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ahash = "0.8"
+crossbeam = "0.8"
+parking_lot = "0.12"
+rkyv = { version = "0.7", features = ["validation"] }
+arc-swap = "1.7"
+rand = "0.8"
