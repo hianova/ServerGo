@@ -8,6 +8,7 @@ REQUESTS_PER_THREAD = 1000
 def bench_thread(thread_id, results):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(("127.0.0.1", 6379))
+    s.settimeout(2.0)
     
     start = time.time()
     for i in range(REQUESTS_PER_THREAD):

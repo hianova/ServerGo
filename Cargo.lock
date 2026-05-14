@@ -10,14 +10,14 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "bytes",
- "cdDB",
+ "cddb",
  "clap",
  "criterion",
  "crossbeam",
+ "dashmap",
  "dualcache-ff",
  "ed25519-dalek 2.2.0",
  "futures",
- "hex",
  "io_oi_core",
  "io_oi_node",
  "iroh",
@@ -105,6 +105,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -566,12 +567,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "cdDB"
+name = "cddb"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.12",
  "crossbeam",
+ "io-uring",
  "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1621,6 +1626,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "ed25519 2.2.3",
+ "merlin",
  "rand_core 0.6.4",
  "serde",
  "sha2 0.10.9",
@@ -2880,6 +2886,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
+dependencies = [
+ "bitflags 2.11.1",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "io_oi_core"
 version = "0.1.0"
 dependencies = [
@@ -2901,7 +2918,6 @@ dependencies = [
  "arc-swap",
  "bytecheck",
  "bytes",
- "dualcache-ff",
  "ed25519-dalek 2.2.0",
  "futures-util",
  "io_oi_core",
@@ -3413,6 +3429,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
+dependencies = [
+ "cpufeatures 0.2.17",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3605,6 +3630,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "merlin"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58c38e2799fc0978b65dfff8023ec7843e2330bb462f19198840b34b6582397d"
+dependencies = [
+ "byteorder",
+ "keccak",
+ "rand_core 0.6.4",
+ "zeroize",
 ]
 
 [[package]]

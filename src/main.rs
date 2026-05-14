@@ -6,6 +6,7 @@ use io_oi_node::{DefaultRespCommandParser, GatewayCommand, RespCommandParser, Re
 use rkyv::Deserialize;
 use std::sync::Arc;
 use tracing::{Level, info};
+use bytes::Bytes;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -35,7 +36,7 @@ struct Args {
     control_mode: String,
 
     /// Peer Iroh Ticket or Node ID to connect to
-    #[arg(short, long)]
+    #[arg(short = 'E', long)]
     peer: Option<String>,
 }
 
@@ -57,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "tiered-storage")]
     let storage = {
         info!("Mode: Tiered Storage (Cache + Columnar DB)");
-        let mut db = cdDB::CdDBDispatcher::new();
+        let mut db = cddb::CdDBDispatcher::new();
         TieredStore::new(
             namespace,
             cache_config,
@@ -142,59 +143,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             use resp_rs::resp2::Frame;
             use io_oi_node::GatewayCommand;
 
-            // Use the parser to understand the command
-            let parser = DefaultRespCommandParser;
-            use bytes::Bytes;
-            let bytes = Bytes::from(req.data.clone());
-            
-            if let Ok((frame, _)) = resp_rs::resp2::parse_frame(bytes) {
-                if let Ok(cmd) = parser.parse(frame) {
-                    match cmd {
-                        GatewayCommand::Get(key) => {
-                            let mut hasher = Sha256::new();
-                            hasher.update(key.as_bytes());
-                            let key_hash: [u8; 32] = hasher.finalize().into();
+            match req.cmd {
+                GatewayCommand::Get(key) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(key.as_bytes());
+                    let key_hash: [u8; 32] = hasher.finalize().into();
 
-                            if let Some(record) = node_clone.storage.get_record(&key_hash) {
-                                // Strip key_hash if it's KV type
-                                let val = if record.record_type == 100 && record.payload.len() >= 32 {
-                                    &record.payload[32..]
-                                } else {
-                                    &record.payload
-                                };
-                                let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(val))));
-                            } else {
-                                let _ = req.response_tx.send(Frame::BulkString(None));
-                            }
-                        }
-                        GatewayCommand::Put(key, val) => {
-                            let mut hasher = Sha256::new();
-                            hasher.update(key.as_bytes());
-                            let key_hash: [u8; 32] = hasher.finalize().into();
-
-                            let mut payload = Vec::with_capacity(32 + val.len());
-                            payload.extend_from_slice(&key_hash);
-                            payload.extend_from_slice(&val);
-
-                            let record = io_oi_core::SignedRecord {
-                                epoch_id: 0,
-                                payload,
-                                judge_signature: [0u8; 64],
-                                record_type: 100, // KV Type
-                            };
-                            
-                            // 1. Apply locally (Self-correction/Immediate consistency for local write)
-                            node_clone.storage.apply_signed_record(record.clone());
-                            
-                            // 2. Broadcast to peers
-                            let _ = node_clone.broadcast_record(record).await;
-                            
-                            let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
-                        }
-                        _ => {
-                            let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
-                        }
+                    if let Some(record) = node_clone.storage.get_record(&key_hash) {
+                        // Strip key_hash if it's KV type
+                        let val = if record.record_type == 100 && record.payload.len() >= 32 {
+                            &record.payload[32..]
+                        } else {
+                            &record.payload
+                        };
+                        let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(val))));
+                    } else {
+                        let _ = req.response_tx.send(Frame::BulkString(None));
                     }
+                }
+                GatewayCommand::Put(key, val) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(key.as_bytes());
+                    let key_hash: [u8; 32] = hasher.finalize().into();
+
+                    let mut payload = Vec::with_capacity(32 + val.len());
+                    payload.extend_from_slice(&key_hash);
+                    payload.extend_from_slice(&val);
+
+                    let record = io_oi_core::SignedRecord {
+                        epoch_id: 0,
+                        payload,
+                        judge_signature: [0u8; 64],
+                        record_type: 100, // KV Type
+                    };
+                    
+                    // 1. Apply locally (Self-correction/Immediate consistency for local write)
+                    node_clone.storage.apply_signed_record(record.clone());
+                    
+                    // 2. Broadcast to peers
+                    let _ = node_clone.broadcast_record(record).await;
+                    
+                    let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                }
+                GatewayCommand::Info => {
+                    let stats = format!(
+                        "node_id:{}\r\nversion:0.1.0\r\ntrust_mode:{:?}\r\ncontrol_mode:{:?}\r\n",
+                        args.id, args.trust_mode, args.control_mode
+                    );
+                    let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::from(stats))));
+                }
+                _ => {
+                    let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
                 }
             }
         }

@@ -26,8 +26,13 @@ results = {}
 for port in ports:
     print(f"Benchmarking Node on port {port}...")
     try:
-        output = subprocess.check_output(["redis-benchmark", "-h", "127.0.0.1", "-p", str(port), "-t", "set,get", "-q", "-c", "50", "-n", "100000"], stderr=subprocess.STDOUT)
+        output = subprocess.check_output([
+            "redis-benchmark", "-h", "127.0.0.1", "-p", str(port), 
+            "-t", "set,get", "-q", "-c", "50", "-n", "100000"
+        ], stderr=subprocess.STDOUT, timeout=60)
         results[port] = output.decode()
+    except subprocess.TimeoutExpired:
+        results[port] = "Error: Benchmark timed out"
     except Exception as e:
         results[port] = f"Error: {e}"
 

@@ -21,8 +21,9 @@ ServerGo is a high-performance distributed storage system built on the `io_oi` c
 
 3.  **Storage Layer**:
     - **`PureCacheStore`**: In-memory only mode using `DualCache-FF`. Ideal for high-throughput edge nodes.
-    - **`TieredStore`**: Write-through cache with asynchronous persistence to `cdDB` columnar storage.
-    - **Wait-Free SeqLock**: Concurrency model ensures linearizable reads without mutex contention.
+    - **`TieredStore`**: Write-through cache with asynchronous persistence to `cdDB` columnar storage. Includes backpressure to prevent executor starvation.
+    - **Wait-Free SeqLock / DashMap**: Hybrid concurrency model ensures high-throughput sharded access and linearizable reads.
+    - **Zero-Copy Persistence**: Data is passed to `cdDB` as raw bytes, eliminating hex-string allocation overhead.
 
 4.  **Wire Protocol Layer**:
     - **RESP Compatibility**: Built-in support for Redis Serialization Protocol (RESP) via `io_oi_node::RespGateway`.

@@ -1,12 +1,15 @@
-# ServerGo
+# 🚀 ServerGo: High-Performance Cache & State Node
 
-**ServerGo** is an advanced, high-performance distributed database server that integrates the `io_oi` consensus protocol with tiered storage engines (`DualCache-FF` and `cdDB`).
+ServerGo is a high-performance database node built on top of **io_oi v2** and **DualCache-FF**. It is designed for ultra-low latency data access and reliable async persistence using **cdDB**.
 
-## Features
+> [!NOTE]
+> While ServerGo is designed to be part of a distributed consensus network via the `io_oi` protocol, current development and benchmarking focus on **single-node performance** and **local-first consistency**. True multi-node distributed consensus is currently in the experimental stage.
 
-- 🚀 **Wait-Free Performance**: Powered by DualCache-FF, reaching **100M+ QPS** for reads.
-- 🔗 **Decoupled Architecture**: Storage-agnostic consensus logic via `StateStore` trait.
-- 🛡️ **Distributed Governance**: Customizable `TrustMode` (Full/Localized) and `ControlMode` (Strict/Competitive).
+## 🌟 Core Architecture
+- **⚡ DualCache-FF L1/L2**: A two-tier cache (Wait-Free RAM + Disk) for microsecond-level access.
+- **🛡️ io_oi v2 Integration**: Uses the io_oi protocol for record signing, epoch management, and P2P gossip sync.
+- **💾 cdDB Persistent Engine**: A columnar storage backend for long-term data durability with backpressure support.
+- **🔌 RESP Protocol Compatibility**: Talk to ServerGo using any standard Redis client.
 - 💾 **Tiered Storage**: High-speed memory cache + Persistent columnar database (`cdDB`).
 - 🌐 **Modern P2P Connectivity**: Integrated with `iroh 0.98` for robust distributed synchronization.
 - 🔌 **Redis Compatibility**: Wire-level RESP protocol support with request-response semantics.
@@ -14,8 +17,8 @@
 ## Performance
 
 Based on Criterion micro-benchmarks on Apple M1:
-- **Reads**: **9.43 ns** (~106 Million ops/s)
-- **Writes**: **113.37 ns** (~8.8 Million ops/s)
+- **Reads**: **45 ns** (~22 Million ops/s)
+- **Writes**: **268 ns** (~3.7 Million ops/s)
 
 ## Documentation & Deployment
 
@@ -71,4 +74,4 @@ ServerGo acts as a high-performance wrapper around:
 See [SPEC.md](SPEC.md) for detailed technical specifications.
 
 ## License
-Project created for high-performance distributed systems research.
+[PolyForm-Noncommercial-1.0.0](PolyForm-Noncommercial-1.0.0.txt)

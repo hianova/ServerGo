@@ -27,14 +27,14 @@ def test_distributed_sync():
 
     # 3. Write to Node 1
     print("Writing 'hello' -> 'world' to Node 1 (6379)...")
-    r1 = redis.Redis(host='127.0.0.1', port=6379)
+    r1 = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=5)
     r1.set('hello', 'world')
     
     time.sleep(2) # Wait for P2P propagation
     
     # 4. Read from Node 2
     print("Reading 'hello' from Node 2 (6380)...")
-    r2 = redis.Redis(host='127.0.0.1', port=6380)
+    r2 = redis.Redis(host='127.0.0.1', port=6380, socket_timeout=5)
     val = r2.get('hello')
     
     if val and val.decode('utf-8') == 'world':
