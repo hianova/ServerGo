@@ -1,91 +1,210 @@
-use ahash::AHashMap;
-use cdDB::{CdDBDispatcher, WriteCommand};
-use dualcache_ff::{Config, DualCacheFF};
-use io_oi_core::{Epoch, Node, NodeId};
-use std::thread;
-use std::time::Duration;
+use sha2::{Sha256, Digest};
+use ServerGo::storage::{PureCacheStore, TieredStore};
+use clap::Parser;
+use io_oi_core::{ControlMode, GenesisConfig, NodeId, TrustMode, StateStore};
+use io_oi_node::{DefaultRespCommandParser, GatewayCommand, RespCommandParser, RespGateway, genesis};
+use rkyv::Deserialize;
+use std::sync::Arc;
+use tracing::{Level, info};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Port to bind the RESP server to
+    #[arg(short, long, default_value_t = 6379)]
+    port: u16,
+
+    /// IP address to bind the RESP server to
+    #[arg(short, long, default_value = "127.0.0.1")]
+    bind: String,
+
+    /// Node ID (1-255)
+    #[arg(short, long, default_value_t = 1)]
+    id: u8,
+
+    /// Memory budget for the cache in MB
+    #[arg(long, default_value_t = 512)]
+    budget: usize,
+
+    /// Trust Mode: full (Broadcast) or localized (Gossip)
+    #[arg(long, default_value = "localized")]
+    trust_mode: String,
+
+    /// Control Mode: strict (Leader-only) or competitive (Decentralized)
+    #[arg(long, default_value = "competitive")]
+    control_mode: String,
+
+    /// Peer Iroh Ticket or Node ID to connect to
+    #[arg(short, long)]
+    peer: Option<String>,
+}
 
 #[tokio::main]
-async fn main() {
-    println!("--- ServerGo: Real Multi-Repo Integration ---");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    // 1. Initialize DualCache-FF (Wait-Free Cache)
-    // Using default adaptive config
-    let config = Config::adaptive_config::<String, String>();
-    let cache = DualCacheFF::<String, String>::new(config);
-    println!("DualCache-FF initialized and daemon spawned.");
+    let args = Args::parse();
 
-    // 2. Initialize cdDB (Columnar Database)
-    let mut db = CdDBDispatcher::new();
-    let writer_tx = db.register_partition("server_go.main".to_string());
-    println!("cdDB Dispatcher initialized with partition 'server_go.main'.");
+    info!("--- ServerGo: io_oi v2 Powered Distributed Database ---");
+    info!("Node ID: {}, Bind: {}:{}", args.id, args.bind, args.port);
 
-    // 3. Initialize io_oi types (Distributed Protocol concepts)
-    let local_id: NodeId = [0u8; 32];
-    let epoch = Epoch {
-        leader_id: local_id,
-        epoch_id: 1,
-        deadline: 1234567890,
+    let namespace: [u8; 32] = [0xAA; 32];
+    let mut local_id_bytes: NodeId = [0x00; 32];
+    local_id_bytes[0] = args.id;
+    let cache_config = dualcache_ff::Config::with_memory_budget(args.budget, 60);
+
+    // 1. Initialize Storage based on features
+    #[cfg(feature = "tiered-storage")]
+    let storage = {
+        info!("Mode: Tiered Storage (Cache + Columnar DB)");
+        let mut db = cdDB::CdDBDispatcher::new();
+        TieredStore::new(
+            namespace,
+            cache_config,
+            &mut db,
+            format!("server_go.node_{}", args.id),
+        )
     };
-    println!(
-        "io_oi Protocol state: Epoch {} active for Node ID {:?}.",
-        epoch.epoch_id, local_id
+
+    #[cfg(all(feature = "pure-cache", not(feature = "tiered-storage")))]
+    let storage = {
+        info!("Mode: Pure Cache (In-memory Wait-Free)");
+        PureCacheStore::new(namespace, cache_config)
+    };
+
+    #[cfg(all(not(feature = "tiered-storage"), not(feature = "pure-cache")))]
+    let storage = {
+        info!("Mode: Default (Mock Store)");
+        struct MockStore;
+        impl io_oi_core::StateStore for MockStore {
+            fn get_record(&self, _: &io_oi_core::Hash32) -> Option<io_oi_core::SignedRecord> {
+                None
+            }
+            fn apply_signed_record(&self, _: io_oi_core::SignedRecord) {}
+            fn get_by_epoch(&self, _: io_oi_core::EpochId) -> Vec<io_oi_core::SignedRecord> {
+                vec![]
+            }
+            fn prune(&self, _: io_oi_core::EpochId, _: u64) {}
+        }
+        MockStore
+    };
+
+    // 2. Initialize P2P Endpoint
+    let secret_key = iroh::SecretKey::generate();
+    let node_id = secret_key.public();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(secret_key)
+        .bind()
+        .await?;
+    info!("P2P Endpoint initialized. PeerId: {}", node_id);
+
+    // 3. Initialize io_oi Node with Governance Modes
+    let trust_mode = match args.trust_mode.to_lowercase().as_str() {
+        "full" => TrustMode::Full,
+        _ => TrustMode::Localized,
+    };
+    let control_mode = match args.control_mode.to_lowercase().as_str() {
+        "strict" => ControlMode::Strict,
+        _ => ControlMode::Competitive,
+    };
+
+    let genesis_cfg = GenesisConfig {
+        namespace,
+        founder_id: local_id_bytes,
+        initial_stake: 100,
+        epoch_duration: 1000,
+        trust_mode,
+        control_mode,
+        genesis_url: None,
+    };
+
+    let node = Arc::new(genesis(genesis_cfg, endpoint, storage));
+    info!(
+        "io_oi Node initialized with TrustMode::{:?} and ControlMode::{:?}",
+        trust_mode, control_mode
     );
 
-    // 4. Simulate an Integrated Write Workflow
-    println!("\n--- Simulating Integrated Write ---");
-    let key = "user:123".to_string();
-    let val = "Bob".to_string();
-
-    // Step A: Cache Update (Wait-Free)
-    // In DualCache-FF, insert is non-blocking as it sends to daemon
-    cache.insert(key.clone(), val.clone());
-    println!("Cache update command sent for key: {}", key);
-
-    // Step B: Persistent Storage (cdDB Columnar)
-    let mut attrs = AHashMap::new();
-    attrs.insert("name".to_string(), val.clone());
-
-    let mut attrs_int = AHashMap::new();
-    attrs_int.insert("id".to_string(), 123);
-
-    writer_tx
-        .send(WriteCommand::Insert {
-            entity_id: 1,
-            attributes: attrs,
-            attributes_int: attrs_int,
-        })
-        .unwrap();
-    println!("Storage insert command sent for entity: 1");
-
-    // Allow background threads/daemons to process
-    thread::sleep(Duration::from_millis(200));
-
-    // 5. Simulate a Read Workflow
-    println!("\n--- Simulating Integrated Read ---");
-
-    // Check Cache
-    if let Some(cached_val) = cache.get(&key) {
-        println!("Cache Hit: {} = {}", key, cached_val);
-    } else {
-        println!("Cache Miss for key: {}", key);
+    if let Some(peer_str) = args.peer {
+        if let Ok(peer_id) = peer_str.parse::<iroh::PublicKey>() {
+            node.add_peer(peer_id);
+            info!("Added peer: {}", peer_id);
+        }
     }
 
-    // Check Storage
-    if let Some(route) = db.get_route("server_go.main") {
-        let snapshot = route.get_snapshot();
-        if let Some(ptr) = snapshot.get(&1) {
-            println!("Storage Result (Entity 1): Found in snapshot.");
-            if let Some(idx) = ptr.attribute_indices.get("name") {
-                if let Some(col) = route.get_column_str("name") {
-                    let data = col.data.read();
-                    if let Some(storage_val) = &data[*idx] {
-                        println!("  - Persisted Name: {}", storage_val);
+    // 4. Start RESP Gateway (Internal to io_oi_node)
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    let gateway_addr = format!("{}:{}", args.bind, args.port);
+    let gateway = RespGateway::new(&gateway_addr, tx, DefaultRespCommandParser);
+
+    let node_clone = Arc::clone(&node);
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            use resp_rs::resp2::Frame;
+            use io_oi_node::GatewayCommand;
+
+            // Use the parser to understand the command
+            let parser = DefaultRespCommandParser;
+            use bytes::Bytes;
+            let bytes = Bytes::from(req.data.clone());
+            
+            if let Ok((frame, _)) = resp_rs::resp2::parse_frame(bytes) {
+                if let Ok(cmd) = parser.parse(frame) {
+                    match cmd {
+                        GatewayCommand::Get(key) => {
+                            let mut hasher = Sha256::new();
+                            hasher.update(key.as_bytes());
+                            let key_hash: [u8; 32] = hasher.finalize().into();
+
+                            if let Some(record) = node_clone.storage.get_record(&key_hash) {
+                                // Strip key_hash if it's KV type
+                                let val = if record.record_type == 100 && record.payload.len() >= 32 {
+                                    &record.payload[32..]
+                                } else {
+                                    &record.payload
+                                };
+                                let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(val))));
+                            } else {
+                                let _ = req.response_tx.send(Frame::BulkString(None));
+                            }
+                        }
+                        GatewayCommand::Put(key, val) => {
+                            let mut hasher = Sha256::new();
+                            hasher.update(key.as_bytes());
+                            let key_hash: [u8; 32] = hasher.finalize().into();
+
+                            let mut payload = Vec::with_capacity(32 + val.len());
+                            payload.extend_from_slice(&key_hash);
+                            payload.extend_from_slice(&val);
+
+                            let record = io_oi_core::SignedRecord {
+                                epoch_id: 0,
+                                payload,
+                                judge_signature: [0u8; 64],
+                                record_type: 100, // KV Type
+                            };
+                            
+                            // 1. Apply locally (Self-correction/Immediate consistency for local write)
+                            node_clone.storage.apply_signed_record(record.clone());
+                            
+                            // 2. Broadcast to peers
+                            let _ = node_clone.broadcast_record(record).await;
+                            
+                            let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                        }
+                        _ => {
+                            let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
+                        }
                     }
                 }
             }
         }
-    }
+    });
 
-    println!("\nIntegration Successful. ServerGo is using actual repository logic.");
+    info!(
+        "Wire Protocol Compatibility Layer active (RESP/Redis) on {}.",
+        gateway_addr
+    );
+    gateway.run().await?;
+
+    Ok(())
 }
