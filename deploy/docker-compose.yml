@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  node1:
+    build: .
+    image: server-go:latest
+    container_name: server-go-node1
+    environment:
+      - NODE_ID=1
+      - BUDGET=512
+      - TRUST_MODE=localized
+      - CONTROL_MODE=competitive
+    volumes:
+      - shared_data:/shared
+    ports:
+      - "6379:6379"
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
+
+  node2:
+    build: .
+    image: server-go:latest
+    container_name: server-go-node2
+    environment:
+      - NODE_ID=2
+      - BUDGET=512
+      - TRUST_MODE=localized
+      - CONTROL_MODE=competitive
+    volumes:
+      - shared_data:/shared
+    ports:
+      - "6380:6379"
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
+
+  node3:
+    build: .
+    image: server-go:latest
+    container_name: server-go-node3
+    environment:
+      - NODE_ID=3
+      - BUDGET=512
+      - TRUST_MODE=localized
+      - CONTROL_MODE=competitive
+    volumes:
+      - shared_data:/shared
+    ports:
+      - "6381:6379"
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
+
+  node4:
+    build: .
+    image: server-go:latest
+    container_name: server-go-node4
+    environment:
+      - NODE_ID=4
+      - BUDGET=512
+      - TRUST_MODE=localized
+      - CONTROL_MODE=competitive
+    volumes:
+      - shared_data:/shared
+    ports:
+      - "6382:6379"
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
+
+  node5:
+    build: .
+    image: server-go:latest
+    container_name: server-go-node5
+    environment:
+      - NODE_ID=5
+      - BUDGET=512
+      - TRUST_MODE=localized
+      - CONTROL_MODE=competitive
+    volumes:
+      - shared_data:/shared
+    ports:
+      - "6383:6379"
+    cap_add:
+      - NET_ADMIN
+    entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
+
+  redis:
+    image: redis:alpine
+    container_name: redis-comparison
+    ports:
+      - "6389:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  shared_data:

@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dualcache-ff = "0.1.0"
+dualcache-ff = "0.2.0"
 io_oi_core = { path = "deps/io_oi/core" }
 io_oi_node = { path = "deps/io_oi/node" }
-cddb = { path = "deps/cddb" }
+cdDB = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

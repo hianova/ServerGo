@@ -1,23 +1,21 @@
 use ahash::AHashMap;
-use cddb::{CdDBDispatcher, WriteCommand};
-use dualcache_ff::{DualCacheFF as RawCache, Config};
-use io_oi_core::{EpochId, SignedRecord, StateStore, ScopedKey};
+use cdDB::{
+    Attributes, CdDBDispatcher, PartitionRoute, UserWriter, WorkerState,
+    WriteCommand,
+};
+use dashmap::DashMap;
+use dualcache_ff::{Config, DualCacheFF as RawCache};
+use io_oi_core::{EpochId, ScopedKey, SignedRecord, StateStore};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 pub type Hash32 = [u8; 32];
-
-#[cfg(not(loom))]
-use std::sync::Arc;
-#[cfg(loom)]
-use loom::sync::Arc;
-use dashmap::DashMap;
 
 /// Pure Cache Backend using the high-performance DualCache-FF
 #[derive(Clone)]
 pub struct PureCacheStore {
     cache: Arc<RawCache<ScopedKey, SignedRecord>>,
     namespace: Hash32,
-    // To support get_by_epoch, we maintain a secondary index. 
-    // In a production system, this might be optimized.
     epoch_index: Arc<DashMap<EpochId, Vec<Hash32>>>,
 }
 
@@ -41,7 +39,6 @@ impl StateStore for PureCacheStore {
     }
 
     fn apply_signed_record(&self, record: SignedRecord) {
-        // Simple heuristic for key extraction from payload
         let hash = if record.record_type == 100 && record.payload.len() >= 32 {
             let mut h = [0u8; 32];
             h.copy_from_slice(&record.payload[0..32]);
@@ -84,7 +81,6 @@ impl StateStore for PureCacheStore {
     }
 
     fn prune(&self, current_epoch: EpochId, k: u64) {
-        // Prune the epoch index
         self.epoch_index.retain(|&epoch, _| {
             if epoch > current_epoch { return true; }
             current_epoch - epoch <= k
@@ -92,25 +88,39 @@ impl StateStore for PureCacheStore {
     }
 }
 
-/// Tiered Storage Backend using DualCache-FF + cdDB
+/// Tiered Storage Backend using cdDB 0.2.0 (Wait-Free RCU + Native Blob)
 #[derive(Clone)]
 pub struct TieredStore {
     cache: PureCacheStore,
-    db_tx: tokio::sync::mpsc::Sender<WriteCommand>,
-    route: cddb::PartitionRoute,
+    db_writer: Arc<UserWriter>,
+    route: PartitionRoute,
+    worker: Arc<WorkerState>,
     partition_name: String,
 }
 
 impl TieredStore {
     pub fn new(namespace: Hash32, config: Config, db: &mut CdDBDispatcher, partition: String) -> Self {
-        let tx = db.register_partition(partition.clone());
+        // cdDB 0.2.0 register_partition returns a synchronous UserWriter
+        let writer = db.register_partition(partition.clone());
         let route = db.get_route(&partition).unwrap().clone();
+        let worker = route.register_worker();
+        
         Self {
             cache: PureCacheStore::new(namespace, config),
-            db_tx: tx,
+            db_writer: Arc::new(writer),
             route,
+            worker,
             partition_name: partition,
         }
+    }
+}
+
+// 內部讀取工具，處理 cdDB 0.2.0 的 AtomicPtr (Wait-Free RCU)
+mod cddb_internal {
+    use super::*;
+    pub fn load_ref<'a, T>(ptr: &std::sync::atomic::AtomicPtr<T>) -> &'a T {
+        let p = ptr.load(Ordering::Acquire);
+        unsafe { &*p }
     }
 }
 
@@ -122,27 +132,28 @@ impl StateStore for TieredStore {
         }
 
         // 2. Cache miss, try cdDB
-        let entity_id = {
-            let mut h = 0usize;
-            for i in 0..8 {
-                h = h.wrapping_shl(8) | (hash[i] as usize);
-            }
-            h
-        };
+        let mut hasher = ahash::AHasher::default();
+        use std::hash::Hasher;
+        hasher.write(hash);
+        let entity_id = hasher.finish() as usize;
 
-        let snapshot = self.route.get_snapshot();
-        if let Some(ptr) = snapshot.get(&entity_id) {
-            let col_payload = self.route.get_column_bytes("payload")?;
-            let col_epoch = self.route.get_column_int("epoch")?;
-            let col_type = self.route.get_column_int("type")?;
+        // Use QSBR worker for safe wait-free reading
+        self.worker.enter();
+        let pointers = cddb_internal::load_ref(&self.route.shared_pointers);
+        let record = if let Some(ptr) = pointers.get(&entity_id) {
+            // cdDB 0.2.0 supports native get_column_blob
+            let col_payload = self.route.get_column_blob("payload", &self.worker)?;
+            let col_epoch = self.route.get_column_int("epoch", &self.worker)?;
+            let col_type = self.route.get_column_int("type", &self.worker)?;
 
             let payload_idx = ptr.attribute_indices.get("payload")?;
             let epoch_idx = ptr.attribute_indices.get("epoch")?;
             let type_idx = ptr.attribute_indices.get("type")?;
 
-            let payload = col_payload.data.read().get(*payload_idx)?.as_ref()?.clone();
-            let epoch = *col_epoch.data.read().get(*epoch_idx)?.as_ref()? as EpochId;
-            let record_type = *col_type.data.read().get(*type_idx)?.as_ref()?;
+            // Zero-copy access (clone is still needed for SignedRecord return, but no Hex decoding)
+            let payload = col_payload.get_element(*payload_idx, &self.worker)?;
+            let epoch = col_epoch.get_element(*epoch_idx, &self.worker)? as EpochId;
+            let record_type = col_type.get_element(*type_idx, &self.worker)?;
 
             Some(SignedRecord {
                 epoch_id: epoch,
@@ -152,7 +163,9 @@ impl StateStore for TieredStore {
             })
         } else {
             None
-        }
+        };
+        self.worker.leave();
+        record
     }
 
     fn apply_signed_record(&self, record: SignedRecord) {
@@ -160,52 +173,26 @@ impl StateStore for TieredStore {
         self.cache.apply_signed_record(record.clone());
 
         // 2. Write to cdDB (Async Persistence)
-        let attrs = AHashMap::new();
-        let mut attrs_bytes = AHashMap::new();
-        attrs_bytes.insert("payload".to_string(), record.payload.clone());
+        // cdDB 0.2.0 supports native Blob attributes
+        let mut attrs_blob = Attributes::new();
+        attrs_blob.insert("payload".to_string(), record.payload.clone());
         
-        let mut attrs_int = AHashMap::new();
+        let mut attrs_int = Attributes::new();
         attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
         attrs_int.insert("type".to_string(), record.record_type);
 
-        // Derive entity_id from the record payload hash (same as PureCacheStore)
-        let hash = if record.record_type == 100 && record.payload.len() >= 32 {
-            let mut h = [0u8; 32];
-            h.copy_from_slice(&record.payload[0..32]);
-            h
-        } else {
-            let mut hasher = ahash::AHasher::default();
-            use std::hash::Hasher;
-            hasher.write(&record.payload);
-            let h_u64 = hasher.finish();
-            let mut h = [0u8; 32];
-            h[..8].copy_from_slice(&h_u64.to_le_bytes());
-            h
-        };
+        let mut hasher = ahash::AHasher::default();
+        use std::hash::Hasher;
+        hasher.write(&record.payload);
+        let entity_id = hasher.finish() as usize;
 
-        let entity_id = {
-            let mut h = 0usize;
-            for i in 0..8 {
-                h = h.wrapping_shl(8) | (hash[i] as usize);
-            }
-            h
-        };
-
-        // Backpressure: if the channel is full, we drop or warn without blocking.
-        match self.db_tx.try_send(WriteCommand::Insert {
+        // cdDB 0.2.0 send is synchronous and wait-free
+        let _ = self.db_writer.send(WriteCommand::Insert {
             entity_id,
-            attributes: attrs,
+            attributes: Attributes::new(), // String attributes
             attributes_int: attrs_int,
-            attributes_bytes: attrs_bytes,
-        }) {
-            Ok(_) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("cdDB queue full! Dropping persistence for hash in partition {}", self.partition_name);
-            }
-            Err(e) => {
-                tracing::error!("Failed to persist record to cdDB: {:?}", e);
-            }
-        }
+            attributes_blob: attrs_blob,
+        });
     }
 
     fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {

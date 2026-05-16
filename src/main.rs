@@ -1,5 +1,6 @@
 use sha2::{Sha256, Digest};
 use ServerGo::storage::{PureCacheStore, TieredStore};
+use cdDB::CdDBDispatcher;
 use clap::Parser;
 use io_oi_core::{ControlMode, GenesisConfig, NodeId, TrustMode, StateStore};
 use io_oi_node::{DefaultRespCommandParser, GatewayCommand, RespCommandParser, RespGateway, genesis};
@@ -58,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "tiered-storage")]
     let storage = {
         info!("Mode: Tiered Storage (Cache + Columnar DB)");
-        let mut db = cddb::CdDBDispatcher::new();
+        let mut db = CdDBDispatcher::new_std(Some("data".to_string()));
         TieredStore::new(
             namespace,
             cache_config,

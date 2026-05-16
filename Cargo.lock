@@ -10,7 +10,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "bytes",
- "cddb",
+ "cdDB",
  "clap",
  "criterion",
  "crossbeam",
@@ -103,9 +103,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "const-random",
  "getrandom 0.3.4",
  "once_cell",
- "serde",
  "version_check",
  "zerocopy",
 ]
@@ -567,16 +567,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cddb"
-version = "0.1.0"
+name = "cdDB"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "645d82d35f32ee2772c2b3ce33240f4c69505c6caa50f65db2e1075d43285872"
 dependencies = [
  "ahash 0.8.12",
- "crossbeam",
- "io-uring",
- "parking_lot",
- "serde",
- "serde_json",
- "tokio",
+ "dualcache-ff",
+ "spin 0.9.8",
 ]
 
 [[package]]
@@ -758,6 +756,26 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "const-random"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87e00182fe74b066627d63b85fd550ac2998d4b0bd86bfed477a0ae4c7c71359"
+dependencies = [
+ "const-random-macro",
+]
+
+[[package]]
+name = "const-random-macro"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
+dependencies = [
+ "getrandom 0.2.17",
+ "once_cell",
+ "tiny-keccak",
+]
 
 [[package]]
 name = "const-str"
@@ -1561,13 +1579,11 @@ checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dualcache-ff"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135e443975c2605420fb4e0cce2932b30bc1680168435fdd22f9c294402c6b0d"
+checksum = "0d5dead301c4f80835b844eaa2240fccea98c3b73560a7a3ccdf05fa0a360c01"
 dependencies = [
  "ahash 0.8.12",
- "crossbeam-channel",
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -2886,17 +2902,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-uring"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d09b98f7eace8982db770e4408e7470b028ce513ac28fecdc6bf4c30fe92b62"
-dependencies = [
- "bitflags 2.11.1",
- "cfg-if",
- "libc",
-]
-
-[[package]]
 name = "io_oi_core"
 version = "0.1.0"
 dependencies = [
@@ -2907,6 +2912,7 @@ dependencies = [
  "rand 0.8.6",
  "rkyv",
  "serde",
+ "serde-big-array",
  "serde_json",
  "sha2 0.10.9",
 ]
@@ -5790,6 +5796,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde-error"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6507,6 +6522,15 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tiny-keccak"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
+dependencies = [
+ "crunchy",
 ]
 
 [[package]]
