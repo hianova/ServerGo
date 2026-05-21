@@ -1,13 +1,17 @@
-use sha2::{Sha256, Digest};
-use ServerGo::storage::{PureCacheStore, TieredStore};
+use ServerGo::storage::L2Executor;
+#[cfg(feature = "pure-cache")]
+use ServerGo::storage::PureCacheStore;
+#[cfg(feature = "tiered-storage")]
+use ServerGo::storage::TieredStore;
 use cdDB::CdDBDispatcher;
 use clap::Parser;
-use io_oi_core::{ControlMode, GenesisConfig, NodeId, TrustMode, StateStore};
-use io_oi_node::{DefaultRespCommandParser, GatewayCommand, RespCommandParser, RespGateway, genesis};
-use rkyv::Deserialize;
+use io_oi_core::{ControlMode, GenesisConfig, NodeId, TrustMode};
+use io_oi_node::{DefaultRespCommandParser, RespGateway, genesis};
 use std::sync::Arc;
 use tracing::{Level, info};
 use bytes::Bytes;
+use socket2::{Socket, Domain, Type, Protocol};
+use std::net::TcpListener;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -53,7 +57,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let namespace: [u8; 32] = [0xAA; 32];
     let mut local_id_bytes: NodeId = [0x00; 32];
     local_id_bytes[0] = args.id;
-    let cache_config = dualcache_ff::Config::with_memory_budget(args.budget, 60);
 
     // 1. Initialize Storage based on features
     #[cfg(feature = "tiered-storage")]
@@ -62,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut db = CdDBDispatcher::new_std(Some("data".to_string()));
         TieredStore::new(
             namespace,
-            cache_config,
+            args.budget,
             &mut db,
             format!("server_go.node_{}", args.id),
         )
@@ -71,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(all(feature = "pure-cache", not(feature = "tiered-storage")))]
     let storage = {
         info!("Mode: Pure Cache (In-memory Wait-Free)");
-        PureCacheStore::new(namespace, cache_config)
+        PureCacheStore::new(namespace, args.budget)
     };
 
     #[cfg(all(not(feature = "tiered-storage"), not(feature = "pure-cache")))]
@@ -133,78 +136,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 4. Start RESP Gateway (Internal to io_oi_node)
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    let gateway_addr = format!("{}:{}", args.bind, args.port);
-    let gateway = RespGateway::new(&gateway_addr, tx, DefaultRespCommandParser);
+    let cores = num_cpus::get();
+    info!("Spawning {} worker threads (Thread-per-core architecture)", cores);
+    
+    let mut handles = vec![];
+    for i in 0..cores {
+        let node_clone = Arc::clone(&node);
+        let bind_addr = args.bind.clone();
+        let port = args.port;
+        
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build tokio runtime");
+                
+            rt.block_on(async move {
+                let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+                socket.set_reuse_address(true).unwrap();
+                #[cfg(unix)]
+                socket.set_reuse_port(true).unwrap();
+                
+                let addr = format!("{}:{}", bind_addr, port).parse::<std::net::SocketAddr>().unwrap();
+                socket.bind(&addr.into()).unwrap();
+                socket.listen(1024).unwrap();
+                
+                let listener = TcpListener::from(socket);
+                let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                
+                let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+                let gateway = RespGateway::new_with_listener(tokio_listener, tx, DefaultRespCommandParser);
+                
+                info!("Worker {} listening on {}", i, addr);
 
-    let node_clone = Arc::clone(&node);
-    tokio::spawn(async move {
-        while let Some(req) = rx.recv().await {
-            use resp_rs::resp2::Frame;
-            use io_oi_node::GatewayCommand;
+                tokio::spawn(async move {
+                    while let Some(req) = rx.recv().await {
+                        use resp_rs::resp2::Frame;
+                        use io_oi_node::GatewayCommand;
 
-            match req.cmd {
-                GatewayCommand::Get(key) => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(key.as_bytes());
-                    let key_hash: [u8; 32] = hasher.finalize().into();
-
-                    if let Some(record) = node_clone.storage.get_record(&key_hash) {
-                        // Strip key_hash if it's KV type
-                        let val = if record.record_type == 100 && record.payload.len() >= 32 {
-                            &record.payload[32..]
-                        } else {
-                            &record.payload
-                        };
-                        let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(val))));
-                    } else {
-                        let _ = req.response_tx.send(Frame::BulkString(None));
+                        match req.cmd {
+                            GatewayCommand::Get(key) => {
+                                if let Some(val) = L2Executor::get(&node_clone, key.as_bytes()) {
+                                    let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(&val))));
+                                } else {
+                                    let _ = req.response_tx.send(Frame::BulkString(None));
+                                }
+                            }
+                            GatewayCommand::Put(key, val) => {
+                                L2Executor::put(&node_clone, key.into_bytes(), val);
+                                let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                            }
+                            GatewayCommand::Info => {
+                                let stats = format!(
+                                    "worker_id:{}\r\nversion:0.1.0\r\n",
+                                    i
+                                );
+                                let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::from(stats))));
+                            }
+                            GatewayCommand::Ping => {
+                                let _ = req.response_tx.send(Frame::SimpleString("PONG".into()));
+                            }
+                            _ => {
+                                let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
+                            }
+                        }
                     }
-                }
-                GatewayCommand::Put(key, val) => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(key.as_bytes());
-                    let key_hash: [u8; 32] = hasher.finalize().into();
+                });
 
-                    let mut payload = Vec::with_capacity(32 + val.len());
-                    payload.extend_from_slice(&key_hash);
-                    payload.extend_from_slice(&val);
+                gateway.run().await.unwrap();
+            });
+        });
+        handles.push(handle);
+    }
 
-                    let record = io_oi_core::SignedRecord {
-                        epoch_id: 0,
-                        payload,
-                        judge_signature: [0u8; 64],
-                        record_type: 100, // KV Type
-                    };
-                    
-                    // 1. Apply locally (Self-correction/Immediate consistency for local write)
-                    node_clone.storage.apply_signed_record(record.clone());
-                    
-                    // 2. Broadcast to peers
-                    let _ = node_clone.broadcast_record(record).await;
-                    
-                    let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
-                }
-                GatewayCommand::Info => {
-                    let stats = format!(
-                        "node_id:{}\r\nversion:0.1.0\r\ntrust_mode:{:?}\r\ncontrol_mode:{:?}\r\n",
-                        args.id, args.trust_mode, args.control_mode
-                    );
-                    let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::from(stats))));
-                }
-                _ => {
-                    let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
-                }
-            }
-        }
-    });
-
-    info!(
-        "Wire Protocol Compatibility Layer active (RESP/Redis) on {}.",
-        gateway_addr
-    );
-    gateway.run().await?;
+    for h in handles {
+        h.join().unwrap();
+    }
 
     Ok(())
 }

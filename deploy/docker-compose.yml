@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   node1:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: server-go:latest
     container_name: server-go-node1
     environment:
@@ -19,7 +21,9 @@ services:
     entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
 
   node2:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: server-go:latest
     container_name: server-go-node2
     environment:
@@ -36,7 +40,9 @@ services:
     entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
 
   node3:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: server-go:latest
     container_name: server-go-node3
     environment:
@@ -53,7 +59,9 @@ services:
     entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
 
   node4:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: server-go:latest
     container_name: server-go-node4
     environment:
@@ -70,7 +78,9 @@ services:
     entrypoint: ["/bin/bash", "./tools/entrypoint.sh"]
 
   node5:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: server-go:latest
     container_name: server-go-node5
     environment:

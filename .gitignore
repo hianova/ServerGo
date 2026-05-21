@@ -1,4 +1,6 @@
 /target
 TODO.md
 *.wal
+*.log
 data/
+data_bench/

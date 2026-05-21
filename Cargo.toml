@@ -4,25 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-dualcache-ff = "0.2.0"
-io_oi_core = { path = "deps/io_oi/core" }
+io_oi_core = "0.2.0"
 io_oi_node = { path = "deps/io_oi/node" }
-cdDB = "0.2.0"
-tokio = { version = "1", features = ["full"] }
+cdDB = "0.2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ahash = "0.8"
 futures = "0.3"
 crossbeam = "0.8"
-parking_lot = "0.12"
 rkyv = { version = "0.7", features = ["validation", "strict"] }
 arc-swap = "1.7"
 rand = "0.8"
-dashmap = "5.5"
 redis-protocol = { version = "5", features = ["codec"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.9"
 clap = { version = "4.5", features = ["derive"] }
+socket2 = "0.5"
+num_cpus = "1.13"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 sha2 = "0.10"
@@ -34,6 +32,12 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 anyhow = "1.0"
 resp-rs = "0.1.8"
 loom = { version = "0.7", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { version = "1", features = ["full", "io-uring"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 loom = "0.7"

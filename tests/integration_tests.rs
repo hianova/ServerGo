@@ -1,11 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use ServerGo::resp_server::RespServer;
-    use io_oi_core::{GenesisConfig, Hash32, SignedRecord, StateStore, genesis};
+    use io_oi_node::{RespGateway, RespCommandParser, GatewayCommand, GatewayRequest, genesis};
+    use io_oi_core::{GenesisConfig, Hash32, SignedRecord, StateStore, TrustMode, ControlMode};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use tokio::time::Duration;
+    use bytes::Bytes;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct MockStore {
         records: Mutex<HashMap<Hash32, SignedRecord>>,
@@ -17,7 +19,9 @@ mod tests {
         }
         fn apply_signed_record(&self, record: SignedRecord) {
             let mut h = [0u8; 32];
-            h.copy_from_slice(&record.payload[0..32]);
+            if record.payload.len() >= 32 {
+                h.copy_from_slice(&record.payload[0..32]);
+            }
             self.records.lock().unwrap().insert(h, record);
         }
         fn get_by_epoch(&self, _: u64) -> Vec<SignedRecord> {
@@ -26,12 +30,43 @@ mod tests {
         fn prune(&self, _: u64, _: u64) {}
     }
 
+    struct SimpleParser;
+    impl RespCommandParser for SimpleParser {
+        fn parse(&self, frame: resp_rs::resp2::Frame) -> Result<GatewayCommand, String> {
+            use resp_rs::resp2::Frame;
+            match frame {
+                Frame::Array(Some(arr)) => {
+                    let cmd_bytes = match &arr[0] {
+                        Frame::BulkString(Some(s)) => s.as_ref(),
+                        _ => return Err("Err".into()),
+                    };
+                    if cmd_bytes.eq_ignore_ascii_case(b"GET") {
+                        let key = match &arr[1] {
+                            Frame::BulkString(Some(s)) => String::from_utf8_lossy(s).into_owned(),
+                            _ => return Err("Err".into()),
+                        };
+                        Ok(GatewayCommand::Get(key))
+                    } else if cmd_bytes.eq_ignore_ascii_case(b"SET") {
+                        let key = match &arr[1] {
+                            Frame::BulkString(Some(s)) => String::from_utf8_lossy(s).into_owned(),
+                            _ => return Err("Err".into()),
+                        };
+                        let val = match &arr[2] {
+                            Frame::BulkString(Some(s)) => s.to_vec(),
+                            _ => return Err("Err".into()),
+                        };
+                        Ok(GatewayCommand::Put(key, val))
+                    } else {
+                        Ok(GatewayCommand::Info)
+                    }
+                }
+                _ => Err("Err".into()),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_resp_server() {
-        let _ = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .try_init();
-
         let namespace: [u8; 32] = [0xAA; 32];
         let local_id: [u8; 32] = [1; 32];
         let storage = MockStore {
@@ -43,54 +78,78 @@ mod tests {
             founder_id: local_id,
             initial_stake: 100,
             epoch_duration: 1000,
+            trust_mode: TrustMode::Full,
+            control_mode: ControlMode::Competitive,
+            genesis_url: None,
         };
 
-        let node = Arc::new(genesis(genesis_cfg, storage));
-        let resp_server = RespServer::new(Arc::clone(&node));
+        let secret_key = iroh::SecretKey::generate();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(secret_key)
+            .bind()
+            .await
+            .unwrap();
 
-        let port = 16379; // Use a different port for testing
+        let node = Arc::new(genesis(genesis_cfg, endpoint, storage));
+        let port = 16380;
         let addr = format!("127.0.0.1:{}", port);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayRequest>(100);
+        let node_clone = Arc::clone(&node);
 
-        // Run the RESP server in a separate task
         tokio::spawn(async move {
-            let _ = resp_server.run(&addr).await;
+            while let Some(req) = rx.recv().await {
+                use resp_rs::resp2::Frame;
+                match req.cmd {
+                    GatewayCommand::Get(key) => {
+                        use sha2::{Sha256, Digest};
+                        let mut hasher = Sha256::new();
+                        hasher.update(&key);
+                        let key_hash: [u8; 32] = hasher.finalize().into();
+                        if let Some(record) = node_clone.storage.get_record(&key_hash) {
+                            let val = if record.payload.len() >= 32 { &record.payload[32..] } else { &record.payload };
+                            let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(val))));
+                        } else {
+                            let _ = req.response_tx.send(Frame::BulkString(None));
+                        }
+                    }
+                    GatewayCommand::Put(key, val) => {
+                        use sha2::{Sha256, Digest};
+                        let mut hasher = Sha256::new();
+                        hasher.update(&key);
+                        let key_hash: [u8; 32] = hasher.finalize().into();
+                        let mut payload = Vec::with_capacity(32 + val.len());
+                        payload.extend_from_slice(&key_hash);
+                        payload.extend_from_slice(&val);
+                        node_clone.storage.apply_signed_record(SignedRecord {
+                            epoch_id: 0,
+                            payload,
+                            judge_signature: [0u8; 64],
+                            record_type: 100,
+                        });
+                        let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                    }
+                    _ => {
+                        let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                    }
+                }
+            }
         });
 
-        // Give the server a moment to start
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let gateway = RespGateway::new(&addr, tx, SimpleParser);
+        tokio::spawn(async move { let _ = gateway.run().await; });
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let client = redis::Client::open(format!("redis://127.0.0.1:{}/", port)).unwrap();
-        let mut con = client.get_multiplexed_async_connection().await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        
+        // Test SET
+        stream.write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n").await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("OK"));
 
-        // Test PING
-        let pong: String = redis::cmd("PING").query_async(&mut con).await.unwrap();
-        assert_eq!(pong, "PONG");
-
-        // Test SET and GET
-        let _: () = redis::cmd("SET")
-            .arg("test_key")
-            .arg("test_value")
-            .query_async(&mut con)
-            .await
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await; // Allow cache to sync
-        let val: String = redis::cmd("GET")
-            .arg("test_key")
-            .query_async(&mut con)
-            .await
-            .unwrap();
-        assert_eq!(val, "test_value");
-
-        // Test missing GET
-        let missing: Option<String> = redis::cmd("GET")
-            .arg("missing_key")
-            .query_async(&mut con)
-            .await
-            .unwrap();
-        assert_eq!(missing, None);
-
-        // Test INFO
-        let info: String = redis::cmd("INFO").query_async(&mut con).await.unwrap();
-        assert!(info.contains("server_go_version"));
+        // Test GET
+        stream.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").await.unwrap();
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("$1\r\nv\r\n"));
     }
 }

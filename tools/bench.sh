@@ -14,14 +14,14 @@ echo "Requests: $REQUESTS, Clients: $CLIENTS, Key Range: $KEY_RANGE"
 
 # Run SET benchmark with random keys
 echo "Running SET benchmark..."
-redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -t set -r $KEY_RANGE --precision 3 --csv
+redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -P 50 -t set -r $KEY_RANGE --precision 3 --csv
 
 # Run GET benchmark with random keys
 echo "Running GET benchmark..."
-redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -t get -r $KEY_RANGE --precision 3 --csv
+redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -P 50 -t get -r $KEY_RANGE --precision 3 --csv
 
 # Run MSET benchmark (if supported)
 echo "Running MSET benchmark..."
-redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -t mset -r $KEY_RANGE --csv
+redis-benchmark -h $HOST -p $PORT -n $REQUESTS -c $CLIENTS -P 50 -t mset -r $KEY_RANGE --csv
 
 echo "--- Benchmark Complete ---"

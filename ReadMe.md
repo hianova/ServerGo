@@ -20,12 +20,44 @@ Based on Criterion micro-benchmarks on Apple M1:
 - **Reads**: **45 ns** (~22 Million ops/s)
 - **Writes**: **268 ns** (~3.7 Million ops/s)
 
-## Documentation & Deployment
+## 📦 Deployment & Orchestration
+
+All deployment, orchestration, and benchmarking configurations are consolidated under the [deploy/](./deploy/) directory to keep the project root clean and organized.
+
+### Multi-Node Cluster (Docker Compose)
+To compile the system and spin up a local 5-node distributed cluster (along with a comparative Redis instance):
+
+```bash
+cd deploy
+make build
+make up
+```
+
+This starts:
+- 5 ServerGo nodes on ports `6379`, `6380`, `6381`, `6382`, and `6383` respectively.
+- A standard Redis baseline on port `6389` for benchmark comparisons.
+
+Orchestration commands available in `deploy/Makefile`:
+- `make build`: Rebuild the ServerGo Docker image.
+- `make up` / `make down`: Start / stop the distributed cluster.
+- `make release`: Build and package a release binary for macOS.
+- `make release-linux`: Build and package a release binary for Linux (via Docker cross-compilation).
+- `make chaos` / `make oom-test`: Run cluster resilience/OOM endurance suites.
+- `make clean`: Bring down the containers and clean database/WAL assets.
+
+### 🐧 Linux `io_uring` Acceleration
+ServerGo compiles with platform-specific `io_uring` support enabled automatically when built for Linux environments.
+- **How it works**: The `Cargo.toml` targets `tokio`'s unstable `io-uring` driver selectively on `cfg(target_os = "linux")` environments.
+- **Docker builds**: The [deploy/Dockerfile](./deploy/Dockerfile) injects `ENV RUSTFLAGS="--cfg tokio_unstable"` during the build stage. This compiles and binds the high-performance async ring buffer system to the networking runtime.
+- **macOS/Dev Compatibility**: Building locally on macOS uses the standard thread-per-core `epoll` equivalent without any additional requirements.
+
+## 📘 Documentation & References
 
 - 📘 [安裝教學 (Traditional Chinese)](./install_packages/安裝教學.md)
 - 📖 [Deployment Tutorial (English)](./install_packages/deploy_tutorial.md)
 - 📊 [Performance Report](./perf_report.md)
 - 📦 [Installation Packages](./install_packages/) - Pre-built binaries and automation scripts.
+
 
 ## Quick Start
 

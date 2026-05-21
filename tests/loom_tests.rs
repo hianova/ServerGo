@@ -1,10 +1,9 @@
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 mod tests {
     use loom::sync::Arc;
     use loom::thread;
     use io_oi_core::{SignedRecord, StateStore};
     use ServerGo::storage::PureCacheStore;
-    use dualcache_ff::Config;
 
     type Hash32 = [u8; 32];
 
@@ -12,8 +11,7 @@ mod tests {
     fn test_concurrent_apply_and_get() {
         loom::model(|| {
             let namespace: Hash32 = [0xAA; 32];
-            let config = Config::with_memory_budget(1, 60); // Small config for loom
-            let store = Arc::new(PureCacheStore::new(namespace, config));
+            let store = Arc::new(PureCacheStore::new(namespace, 1));
 
             let store_clone: Arc<PureCacheStore> = Arc::clone(&store);
             let t1 = thread::spawn(move || {

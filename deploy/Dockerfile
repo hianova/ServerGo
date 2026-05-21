@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 
 # Build with tiered-storage feature by default
+ENV RUSTFLAGS="--cfg tokio_unstable"
 RUN cargo build --release --features tiered-storage
 
 # Runtime stage
