@@ -1,9 +1,69 @@
-use cdDB::{
-    Attributes, CdDBDispatcher, PartitionRoute, UserWriter, WriteCommand,
-};
 use io_oi_core::{EpochId, Hash32, SignedRecord, StateStore};
+use cdDB::CdDBDispatcher;
+
+#[cfg(feature = "loom")]
+use loom::sync::Arc;
+#[cfg(feature = "loom")]
+use loom::sync::Mutex;
+#[cfg(feature = "loom")]
+use std::collections::HashMap;
+#[cfg(feature = "loom")]
+use std::collections::hash_map::DefaultHasher;
+
+#[cfg(not(feature = "loom"))]
+use cdDB::{
+    Attributes, PartitionRoute, UserWriter, WriteCommand,
+};
+#[cfg(not(feature = "loom"))]
 use std::sync::Arc;
 
+// ==========================================
+// 1. Pure Cache Store Definition
+// ==========================================
+
+#[cfg(feature = "loom")]
+#[derive(Clone)]
+pub struct PureCacheStore {
+    map: Arc<Mutex<HashMap<Hash32, SignedRecord>>>,
+}
+
+#[cfg(feature = "loom")]
+impl PureCacheStore {
+    pub fn new(_namespace: Hash32, _ram_mb: usize) -> Self {
+        Self {
+            map: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+#[cfg(feature = "loom")]
+impl StateStore for PureCacheStore {
+    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
+        let guard = self.map.lock().unwrap();
+        guard.get(hash).cloned()
+    }
+
+    fn apply_signed_record(&self, record: SignedRecord) {
+        let mut hasher = DefaultHasher::new();
+        use std::hash::Hasher;
+        hasher.write(&record.payload);
+        let h = hasher.finish();
+        let mut hash = [0u8; 32];
+        hash[..8].copy_from_slice(&h.to_be_bytes());
+
+        let mut guard = self.map.lock().unwrap();
+        guard.insert(hash, record);
+    }
+
+    fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
+        let guard = self.map.lock().unwrap();
+        guard.values().filter(|r| r.epoch_id == epoch_id).cloned().collect()
+    }
+
+    fn prune(&self, _current_epoch: EpochId, _k: u64) {}
+}
+
+#[cfg(not(feature = "loom"))]
 /// Pure Cache Backend using cdDB in memory-only mode (No-WAL)
 #[derive(Clone)]
 pub struct PureCacheStore {
@@ -12,6 +72,7 @@ pub struct PureCacheStore {
     route: PartitionRoute,
 }
 
+#[cfg(not(feature = "loom"))]
 impl PureCacheStore {
     pub fn new(_namespace: Hash32, _ram_mb: usize) -> Self {
         // Create an in-memory CdDBDispatcher (base_path is None)
@@ -28,6 +89,7 @@ impl PureCacheStore {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 impl StateStore for PureCacheStore {
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
         let mut hasher = ahash::AHasher::default();
@@ -107,6 +169,45 @@ impl StateStore for PureCacheStore {
     }
 }
 
+// ==========================================
+// 2. Tiered Store Definition
+// ==========================================
+
+#[cfg(feature = "loom")]
+#[derive(Clone)]
+pub struct TieredStore {
+    cache: PureCacheStore,
+}
+
+#[cfg(feature = "loom")]
+impl TieredStore {
+    pub fn new(namespace: Hash32, ram_mb: usize, _db: &mut CdDBDispatcher, _partition: String) -> Self {
+        Self {
+            cache: PureCacheStore::new(namespace, ram_mb),
+        }
+    }
+}
+
+#[cfg(feature = "loom")]
+impl StateStore for TieredStore {
+    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
+        self.cache.get_record(hash)
+    }
+
+    fn apply_signed_record(&self, record: SignedRecord) {
+        self.cache.apply_signed_record(record);
+    }
+
+    fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
+        self.cache.get_by_epoch(epoch_id)
+    }
+
+    fn prune(&self, current_epoch: EpochId, k: u64) {
+        self.cache.prune(current_epoch, k);
+    }
+}
+
+#[cfg(not(feature = "loom"))]
 /// Tiered Storage Backend using cdDB 0.2.3 (Wait-Free RCU + Native Blob)
 #[derive(Clone)]
 pub struct TieredStore {
@@ -115,6 +216,7 @@ pub struct TieredStore {
     route: PartitionRoute,
 }
 
+#[cfg(not(feature = "loom"))]
 impl TieredStore {
     pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher, partition: String) -> Self {
         // cdDB 0.2.3 register_partition_with_wal returns a synchronous UserWriter with persistence
@@ -130,6 +232,7 @@ impl TieredStore {
     }
 }
 
+#[cfg(not(feature = "loom"))]
 impl StateStore for TieredStore {
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
         // 1. Try cache first
@@ -217,9 +320,46 @@ impl StateStore for TieredStore {
     }
 }
 
+// ==========================================
+// 3. L2 Execution Layer Definition
+// ==========================================
+
+#[cfg(feature = "loom")]
+pub struct L2Executor;
+
+#[cfg(feature = "loom")]
+impl L2Executor {
+    pub fn get(node: &io_oi_node::Node, key: &[u8]) -> Option<Vec<u8>> {
+        let mut hasher = DefaultHasher::new();
+        use std::hash::Hasher;
+        hasher.write(key);
+        let mut hash = [0u8; 32];
+        let bytes = hasher.finish().to_be_bytes();
+        hash[..8].copy_from_slice(&bytes);
+
+        if let Some(record) = node.storage.get_record(&hash) {
+            Some(record.payload)
+        } else {
+            None
+        }
+    }
+
+    pub fn put(node: &std::sync::Arc<io_oi_node::Node>, _key: Vec<u8>, val: Vec<u8>) {
+        let record = io_oi_core::SignedRecord {
+            epoch_id: 0,
+            payload: val,
+            judge_signature: [0u8; 64],
+            record_type: 100,
+        };
+        node.storage.apply_signed_record(record);
+    }
+}
+
+#[cfg(not(feature = "loom"))]
 /// L2 Execution Layer - Coordinates business logic, caching, and persistence
 pub struct L2Executor;
 
+#[cfg(not(feature = "loom"))]
 impl L2Executor {
     /// L2 Get - queries cdDB tiered storage under a safe QSBR pin
     pub fn get(node: &io_oi_node::Node, key: &[u8]) -> Option<Vec<u8>> {

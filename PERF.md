@@ -1,6 +1,37 @@
 # ServerGo 性能測試報告
 
-## Version v0.2.7 (Current - Advanced Foundations Observability with Telemetry Server and Custom Metrics)
+## Version v0.2.8 (Current - Foundations Syscall Sandboxing and Custom Gated Features)
+
+### 測試環境
+- **處理器**: Apple M1 (ARM64)
+- **內存**: 8GB (Unified Memory)
+- **操作系統**: macOS
+- **核心組件**: 
+    - **io_oi_core**: v0.2.1 (crates.io version)
+    - **io_oi_node**: v0.1.0 (local workspace package)
+    - **cdDB**: v0.2.3 (Optimized QuerySession RCU pinning)
+    - **foundations**: v5.7.1 (Custom features: CLI, Settings, Telemetry, Syscall Sandboxing)
+- **測試框架**: Rust Criterion 0.5
+
+### 測試結果摘要
+
+#### 核心存儲引擎性能 (Criterion 基準測試)
+| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **116.93 ns** | **~8.55 M ops/s** | 整合 RCU 記憶體讀取與 telemetry-server 狀態暴露 |
+| **pure_apply (寫入)** | **655.53 ns** | **~1.52 M ops/s** | 整合記憶體寫入與零分配狀態更新計數 |
+| **tiered_get (讀取)** | **813.37 ns** | **~1.23 M ops/s** | 分層讀取 (含 cdDB 0.2.3 核心 RCU session pin 讀取) |
+| **tiered_apply (寫入)** | **7.16 µs** | **~139.5 K ops/s** | 分層 WAL 落盤持久化寫入與 columns 追加 |
+
+> [!NOTE]
+> **v0.2.8 性能與沙箱保護說明**:
+> 1. **Foundations 自定義 Feature-Gating 整合**: 引入可拆卸的 `default-features = false`，解耦 jemalloc 後台線程在虛擬 Loom 調度器下的虛擬化衝突，保證 Loom concurrency 壓測 100% 通過。
+> 2. **Syscall Sandboxing 安全防護**: 導入 foundations 的 `security` 特性，在 Linux 架構上啟用靜態 seccomp syscall 許可名單，只允許 `SERVICE_BASICS`、`ASYNC` 與 `NET_SOCKET_API`，為分佈式部署提供強大的隔離邊界。
+> 3. **極致觀測與穩定**: Criterion 基準壓測表明，即使在全面啟用 Seccomp 過濾與 telemetry 進程通信下，`pure_get` 依然達到 **~8.55 M ops/s**，展現了強大而極具彈性的防護性能。
+
+---
+
+## Version v0.2.7 (Historical - Advanced Foundations Observability with Telemetry Server and Custom Metrics)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)

@@ -16,6 +16,21 @@ use std::net::TcpListener;
 use foundations::settings::settings;
 use foundations::telemetry::settings::TelemetrySettings;
 
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+use foundations::security::{allow_list, enable_syscall_sandboxing, ViolationAction};
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+use foundations::security::common_syscall_allow_lists::{ASYNC, NET_SOCKET_API, SERVICE_BASICS};
+
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+allow_list! {
+    static ALLOWED = [
+        ..SERVICE_BASICS,
+        ..ASYNC,
+        ..NET_SOCKET_API
+    ]
+}
+
+
 fn default_port() -> u16 { 6379 }
 fn default_bind() -> String { "127.0.0.1".to_string() }
 fn default_id() -> u8 { 1 }
@@ -89,6 +104,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     tokio::spawn(telemetry_driver);
 
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        info!("Enabling seccomp-based syscall sandboxing...");
+        match enable_syscall_sandboxing(ViolationAction::KillProcess, &ALLOWED) {
+            Ok(_) => info!("Syscall sandboxing successfully enabled."),
+            Err(e) => tracing::warn!("Failed to enable syscall sandboxing: {:?}", e),
+        }
+    }
+
+
     info!("--- ServerGo: io_oi v2 Powered Distributed Database ---");
     info!("Node ID: {}, Bind: {}:{}", args.id, args.bind, args.port);
 
@@ -96,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut local_id_bytes: NodeId = [0x00; 32];
     local_id_bytes[0] = args.id;
 
-    let mut _db_holder = None;
+    let mut _db_holder: Option<CdDBDispatcher> = None;
 
     // 1. Initialize Storage based on features
     #[cfg(feature = "tiered-storage")]

@@ -9,7 +9,7 @@ These tests verify the core logic and networking layers using standard Rust test
 | Test Case | Description | Command |
 | :--- | :--- | :--- |
 | `test_resp_server` | Verifies the RESP gateway (PING, SET, GET, INFO) and basic storage interaction. | `cargo test --test integration_tests` |
-| `test_concurrent_apply_and_get` | Loom-based concurrency test to check for race conditions in storage engines. | `cargo test --test loom_tests --features loom` |
+| `test_concurrent_apply_and_get` | Loom-based concurrency test to check for race conditions in storage engines. | `cargo test --test loom_tests --no-default-features --features loom` |
 
 ## 2. Rust Performance Benchmarks (`benches/`)
 

@@ -80,6 +80,19 @@ To maximize networking and disk I/O performance on modern Linux hosts, ServerGo 
 2. **Tokio Unstable Feature Activation**: Enabling the `io_uring` driver in standard Tokio is an unstable feature and requires the `--cfg tokio_unstable` compiler flag (`RUSTFLAGS` environment variable) during Linux target compilation. This enables the runtime to utilize the highly optimized Linux asynchronous system call ring interface for network packet handling.
 
 
+## Security & Sandboxing (Linux seccomp)
+
+To minimize the security attack surface in untrusted or multi-tenant production environments, ServerGo integrates kernel-level system call sandboxing:
+
+1. **Linux seccomp-based Filtering**: On Linux `x86_64` and `aarch64` targets, ServerGo leverages Linux `seccomp` (Secure Computing Mode) to restrict allowed system calls to an absolute minimum necessary for database operation.
+2. **Predefined Syscall Allow Lists**: Configures a strict allow-list composed of three core profiles from the `foundations::security` module:
+   - `SERVICE_BASICS`: Minimum standard library and runtime bootstrap syscalls.
+   - `ASYNC`: Necessary calls for asynchronous scheduler operations (epoll, timers).
+   - `NET_SOCKET_API`: Sockets and network connection interface calls.
+3. **Defense-in-Depth Hardening**: Any unapproved syscall attempts immediately trigger `ViolationAction::KillProcess`, mitigating arbitrary code execution exploits.
+4. **Cross-Platform Compatibility**: Syscall sandboxing is compiled target-specifically using Rust conditional attributes (`#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]`), serving as a zero-overhead safe no-op on non-Linux development environments (e.g. macOS).
+
+
 ## Configuration & CLI Interface
 
 ServerGo utilizes the robust `foundations` settings and CLI subsystem to manage configurations rather than relying on loose command-line flags:

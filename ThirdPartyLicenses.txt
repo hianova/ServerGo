@@ -1,0 +1,59 @@
+ServerGo Dependency Licenses
+============================
+
+This document lists the third-party dependencies used by ServerGo along with their respective license terms.
+
+1. Cloudflare foundations
+   - Version: 5.7.1
+   - License: Apache License 2.0
+   - Repository: https://github.com/cloudflare/foundations
+
+2. io_oi Consensus Engine
+   - Version: 0.2.1 / 0.1.0 (local workspace)
+   - License: PolyForm Noncommercial License 1.0.0
+   - Repository: Local dependency under deps/io_oi
+
+3. cdDB
+   - Version: 0.2.3 (local workspace)
+   - License: PolyForm Noncommercial License 1.0.0
+   - Repository: Local dependency under deps/cdDB
+
+4. Tokio
+   - Version: 1.0 (full, io-uring)
+   - License: MIT License
+   - Repository: https://github.com/tokio-rs/tokio
+
+5. Iroh (P2P Network Engine)
+   - Version: 0.98 (iroh, iroh-gossip, iroh-net)
+   - License: Apache License 2.0 or MIT License
+   - Repository: https://github.com/n0-computer/iroh
+
+6. Serde & Serde JSON
+   - Version: 1.0
+   - License: Apache License 2.0 or MIT License
+   - Repository: https://github.com/serde-rs/serde
+
+7. Ahash
+   - Version: 0.8
+   - License: Apache License 2.0 or MIT License
+   - Repository: https://github.com/tkaitchuck/ahash
+
+8. Crossbeam
+   - Version: 0.8
+   - License: Apache License 2.0 or MIT License
+   - Repository: https://github.com/crossbeam-rs/crossbeam
+
+9. Socket2
+   - Version: 0.5
+   - License: Apache License 2.0 or MIT License
+   - Repository: https://github.com/rust-lang/socket2
+
+10. Sha2
+    - Version: 0.10
+    - License: Apache License 2.0 or MIT License
+    - Repository: https://github.com/RustCrypto/hashes
+
+11. Clap
+    - Version: 4.5
+    - License: Apache License 2.0 or MIT License
+    - Repository: https://github.com/clap-rs/clap
