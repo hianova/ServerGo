@@ -568,11 +568,10 @@ dependencies = [
 [[package]]
 name = "cdDB"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cece1552be75388b639a97c927adf183ee00de5cbf6fd202b28188a7d71f5a2"
 dependencies = [
  "ahash 0.8.12",
  "dualcache-ff",
+ "hashbrown 0.14.5",
  "spin 0.9.8",
 ]
 
@@ -1314,7 +1313,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1578,9 +1577,9 @@ checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dualcache-ff"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fa887c04bdf6d3455ce46008e37619d177319d2843926e104d2bfbe6f647a51"
+checksum = "176246a1ac61429a7c14fa96cd9583c7a5923b5d75c55b4696e1be3800042dc0"
 dependencies = [
  "ahash 0.8.12",
 ]
@@ -2274,6 +2273,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash 0.8.12",
+ "rustc-std-workspace-alloc",
 ]
 
 [[package]]
@@ -2923,9 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "io_oi_core"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1140110515522670ef9f48b61f4932485682c9500fdbcdd5ffff1346f7835002"
+version = "0.2.1"
 dependencies = [
  "arc-swap",
  "bytecheck",
@@ -5537,6 +5535,12 @@ name = "rustc-hash"
 version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
+name = "rustc-std-workspace-alloc"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d441c3b2ebf55cebf796bfdc265d67fa09db17b7bb6bd4be75c509e1e8fec3"
 
 [[package]]
 name = "rustc_version"
