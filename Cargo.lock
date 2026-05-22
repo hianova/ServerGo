@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "cdDB"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ahash 0.8.12",
  "dualcache-ff",
@@ -3252,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "io_oi_core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arc-swap",
  "bytecheck",

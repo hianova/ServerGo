@@ -1,6 +1,37 @@
 # ServerGo 性能測試報告
 
-## Version v0.2.9 (Current - Thread-Local QSBR Worker Caching)
+## Version v0.2.10 (Current - cdDB v0.2.4 Log-Structured & Bounded Channel Persistence)
+
+### 測試環境
+- **處理器**: Apple M1 (ARM64)
+- **內存**: 8GB (Unified Memory)
+- **操作系統**: macOS
+- **核心組件**: 
+    - **io_oi_core**: v0.2.2 (crates.io version)
+    - **io_oi_node**: v0.1.0 (local workspace package)
+    - **cdDB**: v0.2.4 (Log-structured shared binary storage with single entities.bin and batch WAL)
+    - **foundations**: v5.7.1 (Custom features: CLI, Settings, Telemetry, Syscall Sandboxing)
+- **測試框架**: Rust Criterion 0.5
+
+### 測試結果摘要
+
+#### 核心存儲引擎性能 (Criterion 基準測試)
+| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **39.34 ns** | **~25.42 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
+| **pure_apply (寫入)** | **782.41 µs** | **~1.28 K ops/s** | 寫入 in-memory cache 分區，底層自動追加至 entities.bin |
+| **tiered_get (讀取)** | **78.02 ns** | **~12.82 M ops/s** | 分層讀取 (Wait-Free RCU + 快取未命中極速 fallback) |
+| **tiered_apply (寫入)** | **1.95 ms** | **~512.6 ops/s** | 分層寫入 (含新版 StdWal BufWriter + entities.bin + 雙重 fsync 持久化) |
+
+> [!NOTE]
+> **v0.2.10 性能與持久化說明**:
+> 1. **cdDB v0.2.4 集成與重構**: 新版本徹底重構了持久化層。廢除了原來為每個實體寫入一個獨立 binary 文件的低效方式，改為將所有實體追加到單個共享的 `entities.bin` 文件中，並使用內存中的偏移量與長度索引 `disk_index` 管理讀取，極大地降低了 OS 文件句柄開銷。
+> 2. **雙重 Fsync 的持久化代價**: 由於 cdDB v0.2.4 為了實現事務的強持久性保證，在 `wal.append_batch` 和 `Storage::flush` 時均調用了 `sync_all` (即 fsync) 強制落盤。在 Criterion 連續的寫入壓測下，吞吐量完全受限於磁盤物理 I/O 延遲 (在 SSD 上每次 fsync 約 0.5~1.5ms)，這使得 `pure_apply` 和 `tiered_apply` 呈現實時的物理磁盤寫入性能 (分別為 782 µs 和 1.95 ms)。
+> 3. **極致讀取 Wait-Free 依然無敵**: 在全新的 v0.2.4 底層引擎下，`pure_get` 穩定保持在 **39.34 ns**，`tiered_get` 穩定在 **78.02 ns**。這證明了 Thread-Local QSBR Worker 緩存機制的極致性能與高階 `QuerySession` 封裝設計在 0.2.4 下依舊穩固無匹，讀取速度甚至超越了 row-oriented 的 `DualCache-FF`。
+
+---
+
+## Version v0.2.9 (Historical - Thread-Local QSBR Worker Caching)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)
