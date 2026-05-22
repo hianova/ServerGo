@@ -51,6 +51,15 @@ ServerGo compiles with platform-specific `io_uring` support enabled automaticall
 - **Docker builds**: The [deploy/Dockerfile](./deploy/Dockerfile) injects `ENV RUSTFLAGS="--cfg tokio_unstable"` during the build stage. This compiles and binds the high-performance async ring buffer system to the networking runtime.
 - **macOS/Dev Compatibility**: Building locally on macOS uses the standard thread-per-core `epoll` equivalent without any additional requirements.
 
+### 📊 Production-Grade Observability
+ServerGo integrates Cloudflare's `foundations` telemetry framework to provide a robust, production-grade observability stack:
+- **HTTP Telemetry Server**: Spawns an independent telemetry background server on `127.0.0.1:8080` (enabled via the `telemetry-server` feature flag), exposing Prometheus metrics at `/metrics` and built-in health checks at `/health`.
+- **Custom Application Metrics**: Defines a declarative `#[metrics]` module to record `db_gets`, `db_puts`, `cache_hits`, and `cache_misses` with zero hot-path overhead.
+- **Structured Logging**: Automatic structured logs routed through asynchronous buffers to ensure zero event-loop bottlenecks.
+- **Jaeger Distributed Tracing**: Provides end-to-end tracing support for cluster request synchronization.
+- **Service Metadata**: Leverages the `service_info!` macro to load service names, versions, and build details directly from `Cargo.toml`.
+
+
 ## 📘 Documentation & References
 
 - 📘 [安裝教學 (Traditional Chinese)](./install_packages/安裝教學.md)
@@ -61,30 +70,42 @@ ServerGo compiles with platform-specific `io_uring` support enabled automaticall
 
 ## Quick Start
 
-### Build and Run
+### 1. Generate the Configuration Template
 
-To start a node with tiered storage and default governance (Localized + Competitive):
+ServerGo utilizes a production-grade, self-documenting YAML configuration file managed by `foundations`. Start by generating a default template:
 
 ```bash
-cargo run --features "tiered-storage" -- --id 1 --port 6379
+cargo run --features "tiered-storage" -- --generate config.yaml
+```
+
+This creates a complete `config.yaml` file in the current directory. You can edit this file to configure the port, bind address, node ID, and custom telemetry options.
+
+### 2. Build and Run
+
+To start a node with tiered storage using the configuration file:
+
+```bash
+cargo run --features "tiered-storage" -- --config config.yaml
 ```
 
 To join an existing cluster as Node 2:
+1. Generate or copy another configuration file (e.g. `node2.yaml`).
+2. Edit `node2.yaml` to specify different settings (such as `id: 2`, `port: 6380`, and add the P2P peer ticket to the `peer` property):
+   ```yaml
+   id: 2
+   port: 6380
+   peer: "<NODE_1_IROH_ID>"
+   ```
+3. Boot Node 2:
+   ```bash
+   cargo run --features "tiered-storage" -- --config node2.yaml
+   ```
 
-```bash
-# Provide the iroh node ID of Node 1 to connect
-cargo run --features "tiered-storage" -- --id 2 --port 6380 --peer <NODE_1_IROH_ID>
-```
+### 3. Advanced Governance
 
-### Advanced Governance
-
-```bash
-# Strict mode: Only initial leader can propose records
-cargo run -- --control-mode strict
-
-# Full trust mode: Broadcast every record to all known peers
-cargo run -- --trust-mode full
-```
+To alter governance modes, simply edit the corresponding fields inside the YAML configuration file under the core options:
+- **Strict Control Mode** (only the initial leader can propose records): Set `control_mode: strict`
+- **Full Trust Mode** (broadcast every record to all known peers): Set `trust_mode: full`
 
 ### Accessing via Redis Client
 

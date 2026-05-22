@@ -1,0 +1,95 @@
+---
+# Port to bind the RESP server to
+port: 6379
+# IP address to bind the RESP server to
+bind: 127.0.0.1
+# Node ID (1-255)
+id: 1
+# Memory budget for the cache in MB
+budget: 512
+# Trust Mode: full (Broadcast) or localized (Gossip)
+trust_mode: localized
+# Control Mode: strict (Leader-only) or competitive (Decentralized)
+control_mode: competitive
+# Peer Iroh Ticket or Node ID to connect to
+peer: ~
+# Serial port to communicate with the Gateway ESP32
+serial_port: ~
+# Telemetry settings for the service (logging, metrics, tracing)
+telemetry:
+  # Distributed tracing settings
+  tracing:
+    # Enables tracing.
+    enabled: true
+    # Maximum number of spans to buffer for output. Any spans above
+    # this limit will be dropped until the queue regains capacity.
+    #
+    # The default is to buffer up to 1 million spans in memory. This protects
+    # services from out-of-memory errors when the output gets heavily backed up.
+    # To disable the limit entirely, set this setting to `None`.
+    max_queue_size: 1000000
+    # The output for the collected traces.
+    output:
+      jaeger_thrift_udp:
+        server_addr: "127.0.0.1:6831"
+        reporter_bind_addr: ~
+        num_tasks: 1
+        max_batch_size: 100
+    # The strategy used to sample traces.
+    sampling_strategy:
+      active:
+        sampling_ratio: 1.0
+        rate_limit:
+          enabled: false
+          max_events_per_second: 0
+    # Enable liveness tracking of all generated spans. Even if the spans are
+    # unsampled. This can be useful for debugging potential hangs cause by
+    # some objects remaining in memory.  The default value is false, meaning
+    # only sampled spans are tracked.
+    #
+    # To get a json dump of the currently active spans, query the telemetry
+    # server's route at `/debug/traces`.
+    liveness_tracking:
+      # Enables liveness tracking.
+      enabled: false
+      # Enable liveness tracking of all generated spans. Even if the spans are
+      # unsampled. This can be useful for debugging potential hangs caused by
+      # some objects remaining in memory. The default value is `false`, meaning
+      # _only sampled_ spans are tracked.
+      track_all_spans: false
+  # Logging settings.
+  logging:
+    # Specifies log output.
+    output: terminal
+    # The format to use for log messages.
+    format: text
+    # Set the logging verbosity level.
+    verbosity: INFO
+    # A list of field keys to redact when emitting logs.
+    #
+    # This might be useful to hide certain fields in production logs as they may
+    # contain sensitive information, but allow them in testing environment.
+    redact_keys: []
+    # Settings for rate limiting emission of log events
+    rate_limit:
+      # Whether to enable rate limiting of events
+      enabled: false
+      # Maximum number of events that can be emitted per second
+      max_events_per_second: 0
+    # Configure log volume metrics.
+    log_volume_metrics:
+      # Whether to enable log volume metrics
+      enabled: false
+  # Metrics settings.
+  metrics:
+    # How the metrics service identifier defined in `ServiceInfo` is used
+    # for this service.
+    service_name_format: metric_prefix
+    # Whether to report optional metrics in the telemetry server.
+    report_optional: false
+  # Server settings.
+  server:
+    # Enables telemetry server
+    enabled: true
+    # Telemetry server address.
+    addr: "127.0.0.1:8080"

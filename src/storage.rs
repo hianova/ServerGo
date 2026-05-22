@@ -38,7 +38,16 @@ impl StateStore for PureCacheStore {
         // Use cdDB high-level Query thread interface with a single session pin
         let q = cdDB::Query::new(&self.route);
         let session = q.session();
-        let payload = session.get_blob(entity_id, "payload")?;
+        let payload = match session.get_blob(entity_id, "payload") {
+            Some(p) => {
+                crate::metrics::db_metrics::cache_hits().inc();
+                p
+            }
+            None => {
+                crate::metrics::db_metrics::cache_misses().inc();
+                return None;
+            }
+        };
         let epoch = session.get_int(entity_id, "epoch")? as EpochId;
         let record_type = session.get_int(entity_id, "type")?;
 
@@ -214,6 +223,7 @@ pub struct L2Executor;
 impl L2Executor {
     /// L2 Get - queries cdDB tiered storage under a safe QSBR pin
     pub fn get(node: &io_oi_node::Node, key: &[u8]) -> Option<Vec<u8>> {
+        crate::metrics::db_metrics::db_gets().inc();
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
         hasher.update(key);
@@ -232,6 +242,7 @@ impl L2Executor {
 
     /// L2 Put - applies record to cdDB wait-free, then spawns P2P broadcast in background
     pub fn put(node: &Arc<io_oi_node::Node>, key: Vec<u8>, val: Vec<u8>) {
+        crate::metrics::db_metrics::db_puts().inc();
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
         hasher.update(&key);

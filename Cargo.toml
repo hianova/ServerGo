@@ -23,6 +23,7 @@ socket2 = "0.5"
 num_cpus = "1.13"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+foundations = { version = "5.7.1", features = ["telemetry", "telemetry-server", "cli", "settings"] }
 sha2 = "0.10"
 iroh = "0.98"
 iroh-gossip = "0.13"

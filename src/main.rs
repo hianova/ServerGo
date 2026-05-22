@@ -4,56 +4,90 @@ use ServerGo::storage::PureCacheStore;
 #[cfg(feature = "tiered-storage")]
 use ServerGo::storage::TieredStore;
 use cdDB::CdDBDispatcher;
-use clap::Parser;
 use io_oi_core::{ControlMode, GenesisConfig, NodeId, TrustMode};
 use io_oi_node::{DefaultRespCommandParser, RespGateway, genesis};
 use std::sync::Arc;
-use tracing::{Level, info};
+use tracing::info;
 use bytes::Bytes;
+#[cfg(not(target_os = "macos"))]
 use socket2::{Socket, Domain, Type, Protocol};
+#[cfg(not(target_os = "macos"))]
 use std::net::TcpListener;
+use foundations::settings::settings;
+use foundations::telemetry::settings::TelemetrySettings;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
+fn default_port() -> u16 { 6379 }
+fn default_bind() -> String { "127.0.0.1".to_string() }
+fn default_id() -> u8 { 1 }
+fn default_budget() -> usize { 512 }
+fn default_trust_mode() -> String { "localized".to_string() }
+fn default_control_mode() -> String { "competitive".to_string() }
+fn default_telemetry() -> TelemetrySettings {
+    let mut tel = TelemetrySettings::default();
+    tel.server.enabled = true;
+    tel.server.addr = foundations::addr::ListenAddr::Tcp(
+        "127.0.0.1:8080".parse().unwrap()
+    );
+    tel
+}
+
+#[settings]
+pub(crate) struct ServerSettings {
     /// Port to bind the RESP server to
-    #[arg(short, long, default_value_t = 6379)]
-    port: u16,
+    #[serde(default = "default_port")]
+    pub port: u16,
 
     /// IP address to bind the RESP server to
-    #[arg(short, long, default_value = "127.0.0.1")]
-    bind: String,
+    #[serde(default = "default_bind")]
+    pub bind: String,
 
     /// Node ID (1-255)
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[serde(default = "default_id")]
+    pub id: u8,
 
     /// Memory budget for the cache in MB
-    #[arg(long, default_value_t = 512)]
-    budget: usize,
+    #[serde(default = "default_budget")]
+    pub budget: usize,
 
     /// Trust Mode: full (Broadcast) or localized (Gossip)
-    #[arg(long, default_value = "localized")]
-    trust_mode: String,
+    #[serde(default = "default_trust_mode")]
+    pub trust_mode: String,
 
     /// Control Mode: strict (Leader-only) or competitive (Decentralized)
-    #[arg(long, default_value = "competitive")]
-    control_mode: String,
+    #[serde(default = "default_control_mode")]
+    pub control_mode: String,
 
     /// Peer Iroh Ticket or Node ID to connect to
-    #[arg(short = 'E', long)]
-    peer: Option<String>,
+    pub peer: Option<String>,
 
     /// Serial port to communicate with the Gateway ESP32
-    #[arg(short, long)]
-    serial_port: Option<String>,
+    pub serial_port: Option<String>,
+
+    /// Telemetry settings for the service (logging, metrics, tracing)
+    #[serde(default = "default_telemetry")]
+    pub telemetry: TelemetrySettings,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    let service_info = foundations::service_info!();
 
-    let args = Args::parse();
+    let cli = foundations::cli::Cli::<ServerSettings>::new(&service_info, vec![])?;
+
+    if cli.arg_matches.get_one::<String>("generate").is_some() {
+        info!("Default configuration file has been generated successfully. Exiting.");
+        return Ok(());
+    }
+
+    let settings = cli.settings;
+    let args = &settings;
+
+    let telemetry_driver = foundations::telemetry::init(foundations::telemetry::TelemetryConfig {
+        service_info: &service_info,
+        settings: &settings.telemetry,
+        custom_server_routes: vec![],
+    })?;
+    tokio::spawn(telemetry_driver);
 
     info!("--- ServerGo: io_oi v2 Powered Distributed Database ---");
     info!("Node ID: {}, Bind: {}:{}", args.id, args.bind, args.port);
@@ -137,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trust_mode, control_mode
     );
 
-    if let Some(peer_str) = args.peer {
+    if let Some(peer_str) = args.peer.clone() {
         if let Ok(peer_id) = peer_str.parse::<iroh::PublicKey>() {
             node.add_peer(peer_id);
             info!("Added peer: {}", peer_id);
@@ -145,8 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Start serial driver if serial_port is provided
-    let serial_tx = if let Some(ref port) = args.serial_port {
-        let tx = node.start_serial_driver(port, 115200);
+    let serial_tx = if let Some(port) = args.serial_port.clone() {
+        let tx = node.start_serial_driver(&port, 115200);
         info!("Serial driver started on port: {}", port);
         Some(tx)
     } else {
@@ -295,25 +329,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             use resp_rs::resp2::Frame;
                             use io_oi_node::GatewayCommand;
 
-                            println!("[ServerGo Debug] Received request: {:?}", req.cmd);
+                            info!("[ServerGo Debug] Received request: {:?}", req.cmd);
 
                             match req.cmd {
                                 GatewayCommand::Get(key) => {
-                                    println!("[ServerGo Debug] L2Executor::get for key: {}", key);
+                                    info!("[ServerGo Debug] L2Executor::get for key: {}", key);
                                     if let Some(val) = L2Executor::get(&node_clone, key.as_bytes()) {
-                                        println!("[ServerGo Debug] Found key {} val len {}", key, val.len());
+                                        info!("[ServerGo Debug] Found key {} val len {}", key, val.len());
                                         let send_res = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(&val))));
-                                        println!("[ServerGo Debug] Response send result: {:?}", send_res);
+                                        info!("[ServerGo Debug] Response send result: {:?}", send_res);
                                     } else {
-                                        println!("[ServerGo Debug] Key {} not found", key);
+                                        info!("[ServerGo Debug] Key {} not found", key);
                                         let send_res = req.response_tx.send(Frame::BulkString(None));
-                                        println!("[ServerGo Debug] Response send result: {:?}", send_res);
+                                        info!("[ServerGo Debug] Response send result: {:?}", send_res);
                                     }
                                 }
                                 GatewayCommand::Put(key, val) => {
-                                    println!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
+                                    info!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
                                     L2Executor::put(&node_clone, key.clone().into_bytes(), val.clone());
-                                    println!("[ServerGo Debug] L2Executor::put finished");
+                                    info!("[ServerGo Debug] L2Executor::put finished");
                                     
                                     // Forward VM scripts to Gateway Bridge over USB Serial
                                     if key.starts_with("vm:") {
@@ -351,13 +385,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if let Err(e) = s_tx.send(frame).await {
                                                 eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
                                             } else {
-                                                println!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
+                                                info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
                                             }
                                         }
                                     }
                                     
                                     let send_res = req.response_tx.send(Frame::SimpleString("OK".into()));
-                                    println!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);
+                                    info!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);
                                 }
                                 GatewayCommand::Info => {
                                     let stats = format!(

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use resp_rs::resp2::{parse_frame, Frame};
+use resp_rs::resp2::parse_frame;
 
 fn main() {
     let input = b"*3\r\n$3\r\nPUT\r\n$5\r\nmykey\r\n$5\r\nmyval\r\n";

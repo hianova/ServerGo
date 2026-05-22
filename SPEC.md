@@ -79,6 +79,71 @@ To maximize networking and disk I/O performance on modern Linux hosts, ServerGo 
    - Non-Linux: Uses `tokio` with `["full"]` features.
 2. **Tokio Unstable Feature Activation**: Enabling the `io_uring` driver in standard Tokio is an unstable feature and requires the `--cfg tokio_unstable` compiler flag (`RUSTFLAGS` environment variable) during Linux target compilation. This enables the runtime to utilize the highly optimized Linux asynchronous system call ring interface for network packet handling.
 
+
+## Configuration & CLI Interface
+
+ServerGo utilizes the robust `foundations` settings and CLI subsystem to manage configurations rather than relying on loose command-line flags:
+
+### 1. Command-Line Arguments
+The `foundations::cli::Cli` wrapper defines a standardized, clean set of system management options:
+- `-c, --config <file>`: Specifies one or more YAML configuration files to boot the database server with.
+- `-g, --generate <file>`: Generates a self-documenting YAML configuration file containing default settings, custom descriptions, and full telemetry schemas, then exits immediately.
+- `-v, --version`: Prints the service version extracted directly from `Cargo.toml`.
+- `-h, --help`: Prints standardized usage information.
+
+### 2. YAML Configuration Schema (`config.yaml`)
+A typical generated configuration file looks like this:
+```yaml
+# Port to bind the RESP server to
+port: 6379
+# IP address to bind the RESP server to
+bind: 127.0.0.1
+# Node ID (1-255)
+id: 1
+# Memory budget for the cache in MB
+budget: 512
+# Trust Mode: full (Broadcast) or localized (Gossip)
+trust_mode: localized
+# Control Mode: strict (Leader-only) or competitive (Decentralized)
+control_mode: competitive
+# Peer Iroh Ticket or Node ID to connect to
+peer: ~
+# Serial port to communicate with the Gateway ESP32
+serial_port: ~
+# Telemetry settings (logging, metrics, tracing)
+telemetry:
+  server:
+    enabled: true
+    addr: "127.0.0.1:8080"
+  logging:
+    output: terminal
+    format: text
+    verbosity: INFO
+```
+
+### 3. Environment Variables Override
+In addition to configuration files, `foundations` allows overriding fields dynamically at runtime via environment variables using the `SERVERGO_` prefix:
+- `SERVERGO_PORT`: Overrides the database binding port.
+- `SERVERGO_BIND`: Overrides the database binding address.
+- `SERVERGO_ID`: Overrides the Node ID.
+- `SERVERGO_TELEMETRY_LOGGING_VERBOSITY`: Overrides the logging output verbosity (e.g. `DEBUG`, `INFO`, `WARN`).
+
+## Observability & Telemetry
+
+To ensure reliable production deployments and comprehensive cluster health monitoring, ServerGo integrates Cloudflare's `foundations` crate as its centralized telemetry framework:
+
+1. **Service Metadata Initialization**: Uses the `foundations::service_info!()` macro to dynamically inspect `Cargo.toml` and extract service details (name, version, etc.) at startup, establishing a unified identity for logs, traces, and metrics.
+2. **Unified HTTP Telemetry Server**: Configures and starts the built-in `foundations` telemetry server on `127.0.0.1:8080` (enabled via the `telemetry-server` feature flag), which automatically exposes:
+   - **Prometheus Metrics Endpoint (`/metrics`)**: Exposes runtime metrics and our custom application-level metrics.
+   - **Health Checks (`/health`)**: Exposes built-in server status and health monitoring.
+   - **Memory Profiling**: Support for heap profiling via jemalloc integration.
+3. **Custom Application-Level Metrics**: Implemented a dedicated declarative `#[metrics]` module in `src/metrics.rs` exposing:
+   - `db_gets`: Monotonic counter tracking cumulative GET requests.
+   - `db_puts`: Monotonic counter tracking cumulative PUT requests.
+   - `cache_hits`: Monotonic counter tracking cache lookup hits in the memory layer.
+   - `cache_misses`: Monotonic counter tracking cache lookup misses requiring backend storage lookups.
+4. **Wait-Free Background Telemetry Driver**: The telemetry driver future (`TelemetryDriver`) is spawned asynchronously on the `tokio` event loop, ensuring that log/metric ingestion and HTTP scraping do not interfere with hot-path RCU query execution or P2P broadcast latencies.
+
 ## Performance Claims
 
 - **Latency**: Sub-millisecond read/write latency in `pure-cache` mode.
