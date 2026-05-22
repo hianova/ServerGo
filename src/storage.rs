@@ -90,6 +90,24 @@ impl PureCacheStore {
 }
 
 #[cfg(not(feature = "loom"))]
+#[cfg(not(feature = "loom"))]
+thread_local! {
+    static WORKER_CACHE: std::cell::RefCell<std::collections::HashMap<usize, Arc<cdDB::WorkerState>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(not(feature = "loom"))]
+fn get_worker(route: &cdDB::PartitionRoute) -> Arc<cdDB::WorkerState> {
+    let key = Arc::as_ptr(&route.workers) as usize;
+    WORKER_CACHE.with(|cache| {
+        cache.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| route.register_worker())
+            .clone()
+    })
+}
+
+#[cfg(not(feature = "loom"))]
 impl StateStore for PureCacheStore {
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
         let mut hasher = ahash::AHasher::default();
@@ -97,9 +115,9 @@ impl StateStore for PureCacheStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        // Use cdDB high-level Query thread interface with a single session pin
-        let q = cdDB::Query::new(&self.route);
-        let session = q.session();
+        // Use cdDB high-level Query thread interface with thread-local WorkerState
+        let worker = get_worker(&self.route);
+        let session = cdDB::QuerySession::new(&self.route, &worker);
         let payload = match session.get_blob(entity_id, "payload") {
             Some(p) => {
                 crate::metrics::db_metrics::cache_hits().inc();
@@ -143,9 +161,9 @@ impl StateStore for PureCacheStore {
     }
 
     fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
-        let q = cdDB::Query::new(&self.route);
+        let worker = get_worker(&self.route);
         let mut records = Vec::new();
-        let session = q.session();
+        let session = cdDB::QuerySession::new(&self.route, &worker);
         for entity_id in session.entities_iter() {
             if let Some(epoch) = session.get_int(entity_id, "epoch") {
                 if epoch as EpochId == epoch_id {
@@ -246,9 +264,9 @@ impl StateStore for TieredStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        // Use cdDB high-level Query thread interface with a single session pin
-        let q = cdDB::Query::new(&self.route);
-        let session = q.session();
+        // Use cdDB high-level Query thread interface with thread-local WorkerState
+        let worker = get_worker(&self.route);
+        let session = cdDB::QuerySession::new(&self.route, &worker);
         let payload = session.get_blob(entity_id, "payload")?;
         let epoch = session.get_int(entity_id, "epoch")? as EpochId;
         let record_type = session.get_int(entity_id, "type")?;
@@ -294,9 +312,9 @@ impl StateStore for TieredStore {
             return cache_records;
         }
 
-        let q = cdDB::Query::new(&self.route);
+        let worker = get_worker(&self.route);
         let mut records = Vec::new();
-        let session = q.session();
+        let session = cdDB::QuerySession::new(&self.route, &worker);
         for entity_id in session.entities_iter() {
             if let Some(epoch) = session.get_int(entity_id, "epoch") {
                 if epoch as EpochId == epoch_id {

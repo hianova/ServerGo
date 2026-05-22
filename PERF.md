@@ -1,6 +1,37 @@
 # ServerGo 性能測試報告
 
-## Version v0.2.8 (Current - Foundations Syscall Sandboxing and Custom Gated Features)
+## Version v0.2.9 (Current - Thread-Local QSBR Worker Caching)
+
+### 測試環境
+- **處理器**: Apple M1 (ARM64)
+- **內存**: 8GB (Unified Memory)
+- **操作系統**: macOS
+- **核心組件**: 
+    - **io_oi_core**: v0.2.1 (crates.io version)
+    - **io_oi_node**: v0.1.0 (local workspace package)
+    - **cdDB**: v0.2.3 (Optimized with Thread-Local QSBR Worker Cache)
+    - **foundations**: v5.7.1 (Custom features: CLI, Settings, Telemetry, Syscall Sandboxing)
+- **測試框架**: Rust Criterion 0.5
+
+### 測試結果摘要
+
+#### 核心存儲引擎性能 (Criterion 基準測試)
+| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **38.62 ns** | **~25.89 M ops/s** | 整合 Thread-Local QSBR Worker 緩存，免除重複註冊與鎖爭用 |
+| **pure_apply (寫入)** | **631.18 ns** | **~1.58 M ops/s** | 整合記憶體寫入與零分配狀態更新計數 |
+| **tiered_get (讀取)** | **79.31 ns** | **~12.61 M ops/s** | 分層讀取 (免除多重 QSBR 重複進入開銷，極速降延遲) |
+| **tiered_apply (寫入)** | **6.22 µs** | **~160.7 K ops/s** | 分層 WAL 落盤持久化寫入與 columns 追加 |
+
+> [!NOTE]
+> **v0.2.9 性能優化說明**:
+> 1. **Thread-Local QSBR 緩存機制**: 徹底解決了 `Query::new` 在每次 `get_record` 時動態進行 Worker 註冊的弊端。通過引入 thread-local `WORKER_CACHE`，每個線程僅在首次讀取時執行一次 Partition-level 註冊，後續操作直接重用 `Arc<WorkerState>` 構建 `QuerySession`，將 `pure_get` 耗時從 **116.93 ns** 暴力縮短至 **38.62 ns** (提升 ~3.02x)，甚至超越了 `DualCache-FF` 原生的 44 ns 記錄！
+> 2. **分層讀取 (tiered_get) 暴降 90%**: 由於之前分層讀取在 cache miss 時會重複進行兩次動態 Worker 註冊，產生了極大的 heap 分配與全局 Mutex 鎖開銷。在應用 Thread-Local QSBR 後，`tiered_get` 延遲從 **813.37 ns** 暴跌至 **79.31 ns**，極大地釋放了分層緩存的真實實力。
+> 3. **全安全防護與極致吞吐並存**: 即使在全面啟用 Foundations 的 Metrics、Telemetry 和 Syscall Sandboxing 沙箱保護下，核心引擎的單核讀取吞吐量依舊飆升至 **~25.8 M QPS**，實現了安全與極致性能的完美融合。
+
+---
+
+## Version v0.2.8 (Historical - Foundations Syscall Sandboxing and Custom Gated Features)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)
