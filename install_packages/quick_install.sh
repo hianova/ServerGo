@@ -22,3 +22,5 @@ else
     echo "Error: No matching binary found for your platform."
     exit 1
 fi
+
+echo "Note: For Kubernetes deployment, check install_packages/k8s/ directory."

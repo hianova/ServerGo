@@ -1,5 +1,34 @@
 # ServerGo 性能測試報告
 
+## Version v0.3.0 (Current - cdDB v0.3.0 Asynchronous Group Commit WAL)
+
+### 測試環境
+- **處理器**: Apple M1 (ARM64)
+- **內存**: 8GB (Unified Memory)
+- **操作系統**: macOS
+- **核心組件**: 
+    - **io_oi_core**: v0.2.1
+    - **io_oi_node**: local workspace
+    - **cdDB**: v0.3.0 (Asynchronous Group Commit WAL with Generic Dispatcher)
+- **測試框架**: Rust Criterion 0.5
+
+### 測試結果摘要
+
+#### 核心存儲引擎性能 (Criterion 基準測試)
+| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **29.62 ns** | **~33.7 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
+| **pure_apply (寫入)** | **805.13 µs** | **~1.24 K ops/s** | 寫入 in-memory cache 分區 |
+| **tiered_get (讀取)** | **57.35 ns** | **~17.4 M ops/s** | 分層讀取 (Wait-Free RCU) |
+| **tiered_apply (寫入)** | **6.42 µs** | **~155.5 K ops/s** | 異步 Group Commit 的極速 WAL |
+
+> [!NOTE]
+> **v0.2.11 Asynchronous Group Commit 效能突破**:
+> 1. **解決 1.95ms 痛點**: 藉由 `cdDB` v0.3.0 引進的 `Async100ms` 異步群組提交機制，`tiered_apply` 延遲從 1.95ms 暴降至 **6.42 µs**，完美解決了硬碟同步 I/O 對熱路徑的阻塞，吞吐量從 ~512 ops/s 飆升至 15 萬 ops/s 級別！
+> 2. **極致的讀取性能**: 讀取方面受惠於架構改進與泛型調度器，`pure_get` 打破 30ns 大關來到 29.62ns，而分層讀取 `tiered_get` 也提升至 57.35ns。
+
+---
+
 ## Version v0.2.10 (Current - cdDB v0.2.4 Log-Structured & Bounded Channel Persistence)
 
 ### 測試環境

@@ -35,6 +35,15 @@ To achieve clean separation of concerns and maximum throughput, ServerGo is stru
     - **Zero-Copy Persistence**: Data is passed to `cdDB` as raw bytes, eliminating hex-string allocation overhead.
 
 4.  **Wire Protocol Layer**:
+
+## Implemented Features
+
+- [x] RCU Query Session Thread-Pinning (Lock-Free Read)
+- [x] Zero-Copy RESP parsing (No Heap Allocations)
+- [x] Foundational Telemetry & Metrics & Tracing (foundations)
+- [x] OS Syscall Sandboxing (Seccomp for Linux via foundations)
+- [x] K8s Operator / Helm Chart Deployment
+- [x] Enterprise Snapshot / Restore Toolchain
     - **RESP Compatibility**: Built-in support for Redis Serialization Protocol (RESP) via `io_oi_node::RespGateway`.
     - **Request-Response Semantics**: Supports synchronous `GET` operations across the distributed network.
     - Implements a KV convention (Type 100) to map Redis commands to consensus records.

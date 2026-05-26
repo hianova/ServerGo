@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: servergo-config
+  namespace: servergo
+data:
+  config.yaml: |
+    # ServerGo Configuration
+    storage:
+      partition: "default"
+      ram_mb: 512

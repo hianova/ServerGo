@@ -67,16 +67,30 @@ impl StateStore for PureCacheStore {
 /// Pure Cache Backend using cdDB in memory-only mode (No-WAL)
 #[derive(Clone)]
 pub struct PureCacheStore {
-    _db: Arc<std::sync::Mutex<CdDBDispatcher>>,
+    _db: Arc<std::sync::Mutex<CdDBDispatcher<1024>>>,
     db_writer: Arc<UserWriter>,
-    route: PartitionRoute,
+    route: Arc<PartitionRoute<1024>>,
+}
+
+struct MemFs;
+impl cdDB::platform::FileSystem for MemFs {
+    fn write(&self, _path: &str, _data: &[u8]) -> Result<(), String> { Ok(()) }
+    fn read(&self, _path: &str) -> Result<Vec<u8>, String> { Ok(Vec::new()) }
+    fn append(&self, _path: &str, _data: &[u8]) -> Result<(), String> { Ok(()) }
+    fn exists(&self, _path: &str) -> bool { true }
+    fn create_dir_all(&self, _path: &str) -> Result<(), String> { Ok(()) }
+    fn read_dir(&self, _path: &str) -> Result<Vec<String>, String> { Ok(Vec::new()) }
 }
 
 #[cfg(not(feature = "loom"))]
 impl PureCacheStore {
     pub fn new(_namespace: Hash32, _ram_mb: usize) -> Self {
-        // Create an in-memory CdDBDispatcher (base_path is None)
-        let mut db = CdDBDispatcher::new_std(None);
+        // Create a truly in-memory CdDBDispatcher bypassing the disk by using /dev/null/invalid_path
+        let mut db = CdDBDispatcher::<1024>::new(
+            Some("/dev/null/pure_cache".to_string()),
+            Arc::new(MemFs),
+            Arc::new(cdDB::platform::StdExecutor),
+        );
         // Register in-memory partition (No-WAL)
         let writer = db.register_partition("pure_cache".to_string());
         let route = db.get_route("pure_cache").unwrap().clone();
@@ -97,7 +111,7 @@ thread_local! {
 }
 
 #[cfg(not(feature = "loom"))]
-fn get_worker(route: &cdDB::PartitionRoute) -> Arc<cdDB::WorkerState> {
+fn get_worker(route: &Arc<cdDB::PartitionRoute<1024>>) -> Arc<cdDB::WorkerState> {
     let key = Arc::as_ptr(&route.workers) as usize;
     WORKER_CACHE.with(|cache| {
         cache.borrow_mut()
@@ -199,7 +213,7 @@ pub struct TieredStore {
 
 #[cfg(feature = "loom")]
 impl TieredStore {
-    pub fn new(namespace: Hash32, ram_mb: usize, _db: &mut CdDBDispatcher, _partition: String) -> Self {
+    pub fn new(namespace: Hash32, ram_mb: usize, _db: &mut CdDBDispatcher<1024>, _partition: String) -> Self {
         Self {
             cache: PureCacheStore::new(namespace, ram_mb),
         }
@@ -231,15 +245,15 @@ impl StateStore for TieredStore {
 pub struct TieredStore {
     cache: PureCacheStore,
     db_writer: Arc<UserWriter>,
-    route: PartitionRoute,
+    route: Arc<PartitionRoute<1024>>,
 }
 
 #[cfg(not(feature = "loom"))]
 impl TieredStore {
-    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher, partition: String) -> Self {
+    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher<1024>, partition: String) -> Self {
         // cdDB 0.2.3 register_partition_with_wal returns a synchronous UserWriter with persistence
         let wal_path = format!("data/{}.wal", partition);
-        let writer = db.register_partition_with_wal(partition.clone(), Some(wal_path));
+        let writer = db.register_partition_with_wal(partition.clone(), Some(wal_path), cdDB::WalMode::Async100ms);
         let route = db.get_route(&partition).unwrap().clone();
         
         Self {

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: servergo
+  namespace: servergo
+spec:
+  serviceName: "servergo-service"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: servergo
+  template:
+    metadata:
+      labels:
+        app: servergo
+    spec:
+      containers:
+      - name: servergo
+        image: hianova/servergo:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/opt/servergo/ServerGo"]
+        args: ["--port", "6379", "--id", "1"]
+        ports:
+        - containerPort: 6379
+          name: redis-port
+        volumeMounts:
+        - name: data-volume
+          mountPath: /opt/servergo/data
+        - name: config-volume
+          mountPath: /opt/servergo/config.yaml
+          subPath: config.yaml
+  volumeClaimTemplates:
+  - metadata:
+      name: data-volume
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+      # storageClassName: standard # Adjust depending on the K8s cluster
+      
+      volumes:
+      - name: config-volume
+        configMap:
+          name: servergo-config

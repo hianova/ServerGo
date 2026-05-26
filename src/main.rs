@@ -87,6 +87,53 @@ pub(crate) struct ServerSettings {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service_info = foundations::service_info!();
 
+    let args_env: Vec<String> = std::env::args().collect();
+    if args_env.len() >= 2 && args_env[1] == "snapshot" {
+        let mut output_dir = "data_backup";
+        for i in 2..args_env.len() {
+            if args_env[i] == "--output" && i + 1 < args_env.len() {
+                output_dir = &args_env[i+1];
+            }
+        }
+        println!("Taking snapshot of data to {}", output_dir);
+        let _ = std::fs::create_dir_all(output_dir);
+        if std::path::Path::new("data").exists() {
+            for entry in std::fs::read_dir("data").unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path.file_name().unwrap();
+                    let dest = std::path::Path::new(output_dir).join(file_name);
+                    std::fs::copy(&path, &dest).unwrap();
+                }
+            }
+        }
+        println!("Snapshot completed.");
+        return Ok(());
+    } else if args_env.len() >= 2 && args_env[1] == "restore" {
+        let mut input_dir = "data_backup";
+        for i in 2..args_env.len() {
+            if args_env[i] == "--input" && i + 1 < args_env.len() {
+                input_dir = &args_env[i+1];
+            }
+        }
+        println!("Restoring data from {}", input_dir);
+        let _ = std::fs::create_dir_all("data");
+        if std::path::Path::new(input_dir).exists() {
+            for entry in std::fs::read_dir(input_dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path.file_name().unwrap();
+                    let dest = std::path::Path::new("data").join(file_name);
+                    std::fs::copy(&path, &dest).unwrap();
+                }
+            }
+        }
+        println!("Restore completed.");
+        return Ok(());
+    }
+
     let cli = foundations::cli::Cli::<ServerSettings>::new(&service_info, vec![])?;
 
     if cli.arg_matches.get_one::<String>("generate").is_some() {
@@ -121,13 +168,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut local_id_bytes: NodeId = [0x00; 32];
     local_id_bytes[0] = args.id;
 
-    let mut _db_holder: Option<CdDBDispatcher> = None;
+    let mut _db_holder: Option<CdDBDispatcher<1024>> = None;
 
     // 1. Initialize Storage based on features
     #[cfg(feature = "tiered-storage")]
     let storage = {
         info!("Mode: Tiered Storage (Cache + Columnar DB)");
-        let mut db = CdDBDispatcher::new_std(Some("data".to_string()));
+        let mut db = CdDBDispatcher::<1024>::new_std(Some("data".to_string()));
         let store = TieredStore::new(
             namespace,
             args.budget,

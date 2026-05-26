@@ -34,12 +34,13 @@ fn bench_storage(c: &mut Criterion) {
     group.finish();
 
     // 2. Bench TieredStore
-    let mut db = CdDBDispatcher::new_std(Some("data_bench".to_string()));
+    let mut db = CdDBDispatcher::<1024>::new_std(Some("data_bench".to_string()));
     let tiered_store = TieredStore::new(namespace, 512, &mut db, "bench_partition".to_string());
     let mut group = c.benchmark_group("storage_tiered");
     group.sample_size(10);
-    group.measurement_time(std::time::Duration::from_secs(1));
-    group.warm_up_time(std::time::Duration::from_secs(1));
+    // Use very small measurement time for tiered_store because it pushes async vectors rapidly and can OOM
+    group.measurement_time(std::time::Duration::from_millis(50));
+    group.warm_up_time(std::time::Duration::from_millis(10));
 
     group.bench_function("tiered_apply", |b| {
         b.iter(|| {
