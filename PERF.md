@@ -18,7 +18,7 @@
 | 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
 | :--- | :--- | :--- | :--- |
 | **pure_get (讀取)** | **29.62 ns** | **~33.7 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
-| **pure_apply (寫入)** | **805.13 µs** | **~1.24 K ops/s** | 寫入 in-memory cache 分區 |
+| **pure_apply (寫入)** | **~631.18 ns** | **~1.58 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
 | **tiered_get (讀取)** | **57.35 ns** | **~17.4 M ops/s** | 分層讀取 (Wait-Free RCU) |
 | **tiered_apply (寫入)** | **6.42 µs** | **~155.5 K ops/s** | 異步 Group Commit 的極速 WAL |
 
