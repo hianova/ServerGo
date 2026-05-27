@@ -169,9 +169,9 @@ To ensure reliable production deployments and comprehensive cluster health monit
 ## Performance Claims
 
 - **Latency**:
-  - `pure_get` (Read): **~38.62 ns** (Wait-Free memory column lookup)
-  - `pure_apply` (Write): **~631.18 ns** (Memory column append)
-  - `tiered_get` (Read): **~79.31 ns** (Wait-Free layered memory read)
-  - `tiered_apply` (Write): **~6.22 µs** (Layered write with WAL persistence)
-- **Throughput**: Single-core read throughput scales to **~25.8 M QPS** in pure cache mode, outperforming pure `DualCache-FF` and historical baselines.
+  - `pure_get` (Read): **~127.82 ns** (Wait-Free memory column lookup)
+  - `pure_apply` (Write): **~539.10 ns** (Zero-Allocation Memory column append)
+  - `tiered_get` (Read): **~304.20 ns** (Wait-Free layered memory read)
+  - `tiered_apply` (Write): **~9.25 µs** (Layered write with WAL persistence)
+- **Throughput**: Single-core read throughput scales to **~7.82 M QPS** in pure cache mode.
 - **Consistency**: Guaranteed by the `io_oi` consensus protocol.

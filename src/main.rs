@@ -296,11 +296,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         GatewayCommand::Put(key, val) => {
                             info!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
-                            L2Executor::put(&node_clone, key.clone().into_bytes(), val.clone());
-                            info!("[ServerGo Debug] L2Executor::put finished");
+                            let is_vm = key.starts_with("vm:");
                             
                             // Forward VM scripts to Gateway Bridge over USB Serial
-                            if key.starts_with("vm:") {
+                            if is_vm {
                                 if let Some(ref s_tx) = serial_tx_clone {
                                     let mac = {
                                         let part = key.strip_prefix("vm:").unwrap_or(&key);
@@ -339,6 +338,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+                            
+                            L2Executor::put(&node_clone, key.into_bytes(), val);
+                            info!("[ServerGo Debug] L2Executor::put finished");
                             
                             let send_res = req.response_tx.send(Frame::SimpleString("OK".into()));
                             info!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);
@@ -422,11 +424,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 GatewayCommand::Put(key, val) => {
                                     info!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
-                                    L2Executor::put(&node_clone, key.clone().into_bytes(), val.clone());
-                                    info!("[ServerGo Debug] L2Executor::put finished");
+                                    let is_vm = key.starts_with("vm:");
                                     
                                     // Forward VM scripts to Gateway Bridge over USB Serial
-                                    if key.starts_with("vm:") {
+                                    if is_vm {
                                         if let Some(ref s_tx) = serial_tx_clone {
                                             let mac = {
                                                 let part = key.strip_prefix("vm:").unwrap_or(&key);
@@ -465,6 +466,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                     }
+                                    
+                                    L2Executor::put(&node_clone, key.into_bytes(), val);
+                                    info!("[ServerGo Debug] L2Executor::put finished");
                                     
                                     let send_res = req.response_tx.send(Frame::SimpleString("OK".into()));
                                     info!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);

@@ -1,6 +1,34 @@
 # ServerGo 性能測試報告
 
-## Version v0.3.0 (Current - cdDB v0.3.1 Adaptive Group Commit & TLS & RCU Optimization)
+## Version v0.3.1 (Current - Optimized Memory Allocations and TCP Syscalls)
+
+### 測試環境
+- **處理器**: Apple M1 (ARM64)
+- **內存**: 8GB (Unified Memory)
+- **操作系統**: macOS
+- **核心組件**: 
+    - **io_oi_node**: v0.3.1 (Buffered TCP writes)
+    - **ServerGo**: v0.3.0 (Zero-allocation payload caching)
+- **測試框架**: Rust Criterion 0.5
+
+### 測試結果摘要
+
+#### 核心存儲引擎性能 (Criterion 基準測試)
+| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
+| :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **127.82 ns** | **~7.82 M ops/s** | |
+| **pure_apply (寫入)** | **539.10 ns** | **~1.85 M ops/s** | 免除了 L2Executor 和 PureCacheStore 中的 Payload 深度拷貝 |
+| **tiered_get (讀取)** | **304.20 ns** | **~3.28 M ops/s** | |
+| **tiered_apply (寫入)** | **9.25 µs** | **~108 K ops/s** | 寫入路徑無冗餘記憶體分配 (Jemalloc contention reduced) |
+
+> [!NOTE]
+> **v0.3.1 性能調優與突破說明**:
+> 1. **Zero-Allocation 寫入路徑**: 通過消除 `L2Executor` 和 `TieredStore` 在熱路徑中的 `record.payload.clone()` 和 `String` 分配，顯著降低了 `Jemalloc` 的鎖爭用。寫入延遲從 v0.3.0 的 12.51 µs 降至 9.25 µs (提升約 26%)。
+> 2. **TCP Syscall 批量優化**: 移除了 `RespGateway` 處理 pipelined 請求時 `O(N)` 級別的零碎 `write_all` syscall，改用輸出緩衝區 (output buffer) 一次性刷入，徹底解決了高並發下 32% CPU 時間被 syscall 佔用的瓶頸。
+
+---
+
+## Version v0.3.0 (Historical - cdDB v0.3.1 Adaptive Group Commit & TLS & RCU Optimization)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)

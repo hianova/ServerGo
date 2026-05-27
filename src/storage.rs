@@ -222,9 +222,6 @@ impl StateStore for PureCacheStore {
     }
 
     fn apply_signed_record(&self, record: SignedRecord) {
-        let mut attrs_blob = Attributes::new();
-        attrs_blob.insert("payload".to_string(), record.payload.clone());
-        
         let mut attrs_int = Attributes::new();
         attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
         attrs_int.insert("type".to_string(), record.record_type);
@@ -238,6 +235,9 @@ impl StateStore for PureCacheStore {
             hasher.update(&record.payload);
             h = hasher.finalize().into();
         }
+
+        let mut attrs_blob = Attributes::new();
+        attrs_blob.insert("payload".to_string(), record.payload);
 
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
@@ -430,9 +430,6 @@ impl StateStore for TieredStore {
         self.cache.apply_signed_record(record.clone());
 
         // 2. Write to cdDB (Async Persistence)
-        let mut attrs_blob = Attributes::new();
-        attrs_blob.insert("payload".to_string(), record.payload.clone());
-        
         let mut attrs_int = Attributes::new();
         attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
         attrs_int.insert("type".to_string(), record.record_type);
@@ -446,6 +443,9 @@ impl StateStore for TieredStore {
             hasher.update(&record.payload);
             h = hasher.finalize().into();
         }
+
+        let mut attrs_blob = Attributes::new();
+        attrs_blob.insert("payload".to_string(), record.payload);
 
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
