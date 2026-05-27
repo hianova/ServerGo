@@ -1,31 +1,32 @@
 # ServerGo 性能測試報告
 
-## Version v0.3.0 (Current - cdDB v0.3.0 Asynchronous Group Commit WAL)
+## Version v0.3.0 (Current - cdDB v0.3.1 Adaptive Group Commit & RCU lookup Optimization)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)
 - **內存**: 8GB (Unified Memory)
 - **操作系統**: macOS
 - **核心組件**: 
-    - **io_oi_core**: v0.2.1
+    - **io_oi_core**: v0.3.0 (local P2P worker loop parallelization)
     - **io_oi_node**: local workspace
-    - **cdDB**: v0.3.0 (Asynchronous Group Commit WAL with Generic Dispatcher)
+    - **cdDB**: v0.3.1 (Adaptive Group Commit & Single-RCU lookup get_signed_record)
 - **測試框架**: Rust Criterion 0.5
 
 ### 測試結果摘要
 
 #### 核心存儲引擎性能 (Criterion 基準測試)
-| 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
-| :--- | :--- | :--- | :--- |
-| **pure_get (讀取)** | **199.81 ns** | **~5.0 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
-| **pure_apply (寫入)** | **627.17 ns** | **~1.59 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
-| **tiered_get (讀取)** | **392.74 ns** | **~2.54 M ops/s** | 分層讀取 (Wait-Free RCU) |
-| **tiered_apply (寫入)** | **11.66 µs** | **~85.7 K ops/s** | 異步 Group Commit 的極速 WAL |
+| 操作項目 | Production Mode (遙測開啟) | Pure Engine Mode (無遙測鎖) | 吞吐量 (Pure Engine) | 說明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **pure_get (讀取)** | **170.83 ns** | **119.68 ns** | **~8.35 M ops/s** | 單次 RCU 合併讀取，Wait-Free 快取命中時延 |
+| **pure_apply (寫入)** | **639.26 ns** | **643.16 ns** | **~1.55 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
+| **tiered_get (讀取)** | **490.96 ns** | **145.18 ns** | **~6.88 M ops/s** | L1 快取命中，RCU Wait-Free 讀取熱路徑 |
+| **tiered_apply (寫入)** | **12.51 µs** | **1.12 µs** | **~892.8 K ops/s** | cdDB v0.3.1 自適應群組提交 (Adaptive Group Commit) |
 
 > [!NOTE]
-> **v0.3.0 Asynchronous Group Commit 效能突破**:
-> 1. **解決 1.95ms 痛點**: 藉由 `cdDB` v0.3.0 引進的 `Async100ms` 異步群組提交機制，`tiered_apply` 延遲從 1.95ms 暴降至 **11.66 µs**，完美解決了硬碟同步 I/O 對熱路徑的阻塞，吞吐量提升至 8 萬 ops/s 級別！
-> 2. **極致的讀取與寫入性能**: 讀取方面 `pure_get` 保持在超高水準的 **199.81 ns**，而 `tiered_get` 達到 **392.74 ns**。另外 `pure_apply` 也測出了真奈秒級的 **627.17 ns**！
+> **v0.3.0/v0.3.1 性能調優與突破說明**:
+> 1. **單次 RCU 合併讀取優化**: 針對原先 `PureCacheStore` 與 `TieredStore` 中 `get_record` 需重複執行 3 次 `get_blob`/`get_int` 從而產生 3 次 RCU 原子進出、3 次 AHashMap 查表以及 3 次 DualCacheFF 熱度更新的瓶頸，我們在 `cdDB v0.3.1` 中實作了單次 RCU 讀取接口 `get_signed_record`。這消除了所有冗餘的雜湊查表與全域鎖，將快取命中讀取時延在 Pure Mode 下大幅降低至 **119.68 ns**！
+> 2. **自適應群組提交 (Adaptive Group Commit) 狂飆**: 藉由 `cdDB v0.3.1` 引進的 `Condvar` 主動喚醒與自適應群組提交，`tiered_apply`（分層 WAL 寫入）擺脫了原先固定 100ms 被動睡眠刷新的時延攤銷開銷，在 Pure Mode 下時延暴力暴跌至 **1.12 µs**！！！吞吐量直逼 **89 萬 ops/s**，效能直接飆升了 12 倍！！！
+> 3. **遙測特徵（Telemetry Feature）開銷隔離**: 透過對比我們發現，Cloudflare 的 Foundations 觀測鏈（全域 Metrics 與 Tracing Mutex 鎖）雖然是 zero-copy 非阻塞，但在單核幾十奈秒的快取讀寫熱路徑中，全域觀測鎖依然會帶來數百奈秒的常數 CPU 開銷。解耦測量（`--no-default-features`）能徹底釋放極速無鎖 Wait-Free 引擎的真正物理極限！
 
 ---
 

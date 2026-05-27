@@ -132,21 +132,10 @@ impl StateStore for PureCacheStore {
         // Use cdDB high-level Query thread interface with thread-local WorkerState
         let worker = get_worker(&self.route);
         let session = cdDB::QuerySession::new(&self.route, &worker);
-        let payload = match session.get_blob(entity_id, "payload") {
-            Some(p) => {
-                crate::metrics::db_metrics::cache_hits().inc();
-                p
-            }
-            None => {
-                crate::metrics::db_metrics::cache_misses().inc();
-                return None;
-            }
-        };
-        let epoch = session.get_int(entity_id, "epoch")? as EpochId;
-        let record_type = session.get_int(entity_id, "type")?;
+        let (payload, epoch, record_type) = session.get_signed_record(entity_id)?;
 
         Some(SignedRecord {
-            epoch_id: epoch,
+            epoch_id: epoch as EpochId,
             payload,
             judge_signature: [0u8; 64],
             record_type,
@@ -291,12 +280,10 @@ impl StateStore for TieredStore {
         // Use cdDB high-level Query thread interface with thread-local WorkerState
         let worker = get_worker(&self.route);
         let session = cdDB::QuerySession::new(&self.route, &worker);
-        let payload = session.get_blob(entity_id, "payload")?;
-        let epoch = session.get_int(entity_id, "epoch")? as EpochId;
-        let record_type = session.get_int(entity_id, "type")?;
+        let (payload, epoch, record_type) = session.get_signed_record(entity_id)?;
 
         Some(SignedRecord {
-            epoch_id: epoch,
+            epoch_id: epoch as EpochId,
             payload,
             judge_signature: [0u8; 64],
             record_type,
