@@ -47,6 +47,13 @@ fn default_telemetry() -> TelemetrySettings {
 }
 
 #[settings]
+pub(crate) struct SecuritySettings {
+    #[serde(default = "default_false")]
+    pub enable_vm_scripts: bool,
+}
+fn default_false() -> bool { false }
+
+#[settings]
 pub(crate) struct ServerSettings {
     /// Port to bind the RESP server to
     #[serde(default = "default_port")]
@@ -85,6 +92,9 @@ pub(crate) struct ServerSettings {
     /// Telemetry settings for the service (logging, metrics, tracing)
     #[serde(default = "default_telemetry")]
     pub telemetry: TelemetrySettings,
+
+    #[serde(default)]
+    pub security: SecuritySettings,
 }
 
 #[tokio::main]
@@ -278,11 +288,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let node_clone = Arc::clone(&node);
         let serial_txs_clone = serial_txs.clone();
+        let settings_clone = Arc::new(settings.clone());
         
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 let node_clone = Arc::clone(&node_clone);
                 let serial_txs_clone = serial_txs_clone.clone();
+                let settings_clone = Arc::clone(&settings_clone);
                 tokio::spawn(async move {
                     use resp_rs::resp2::Frame;
                     use io_oi_node::GatewayCommand;
@@ -308,6 +320,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             
                             // Forward VM scripts to Gateway Bridge over USB Serial
                             if is_vm && !serial_txs_clone.is_empty() {
+                                if !settings_clone.security.enable_vm_scripts {
+                                    let _ = req.response_tx.send(Frame::Error("VM scripts are strictly disabled in this production environment".into()));
+                                    return;
+                                }
+
+                                if let Some(addr) = req.peer_addr {
+                                    if !addr.ip().is_loopback() {
+                                        let _ = req.response_tx.send(Frame::Error("VM scripts are only allowed from localhost".into()));
+                                        return;
+                                    }
+                                } else {
+                                    let _ = req.response_tx.send(Frame::Error("VM scripts require a verifiable origin".into()));
+                                    return;
+                                }
+
+                                if val.len() > 4096 {
+                                    let _ = req.response_tx.send(Frame::Error("VM script payload exceeds 4096 bytes limit".into()));
+                                    return;
+                                }
+
                                 let mac = {
                                     let part = key.strip_prefix("vm:").unwrap_or(&key);
                                     if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
@@ -384,6 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bind_addr = args.bind.clone();
             let port = args.port;
             let serial_txs_clone = serial_txs.clone();
+            let settings_clone = Arc::new(settings.clone());
             
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -409,8 +442,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     info!("Worker {} listening on {}", i, addr);
 
+                    let settings_clone = Arc::clone(&settings_clone);
+
                     tokio::spawn(async move {
                         while let Some(req) = rx.recv().await {
+                            let node_clone = Arc::clone(&node_clone);
                             use resp_rs::resp2::Frame;
                             use io_oi_node::GatewayCommand;
 
@@ -435,6 +471,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     
                                     // Forward VM scripts to Gateway Bridge over USB Serial
                                     if is_vm && !serial_txs_clone.is_empty() {
+                                        if !settings_clone.security.enable_vm_scripts {
+                                            let _ = req.response_tx.send(Frame::Error("VM scripts are strictly disabled in this production environment".into()));
+                                            return;
+                                        }
+
+                                        if let Some(addr) = req.peer_addr {
+                                            if !addr.ip().is_loopback() {
+                                                let _ = req.response_tx.send(Frame::Error("VM scripts are only allowed from localhost".into()));
+                                                return;
+                                            }
+                                        } else {
+                                            let _ = req.response_tx.send(Frame::Error("VM scripts require a verifiable origin".into()));
+                                            return;
+                                        }
+
+                                        if val.len() > 4096 {
+                                            let _ = req.response_tx.send(Frame::Error("VM script payload exceeds 4096 bytes limit".into()));
+                                            return;
+                                        }
+
                                         let mac = {
                                             let part = key.strip_prefix("vm:").unwrap_or(&key);
                                             if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
