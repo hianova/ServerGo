@@ -16,9 +16,9 @@ ServerGo is a high-performance database node built on top of **io_oi v2** and **
 
 ## Performance
 
-Based on Criterion micro-benchmarks on Apple M1:
-- **Reads**: **45 ns** (~22 Million ops/s)
-- **Writes**: **268 ns** (~3.7 Million ops/s)
+Based on Criterion micro-benchmarks on Apple M1 (Pure Engine Mode):
+- **Reads**: **~62 ns** (~16.03 Million ops/s via Zero-Copy TLS Cache)
+- **Writes**: **~1.07 µs** (~934K ops/s via Adaptive Group Commit on Tiered WAL)
 
 ## 📦 Deployment & Orchestration
 

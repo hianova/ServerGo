@@ -104,10 +104,12 @@ impl PureCacheStore {
 }
 
 #[cfg(not(feature = "loom"))]
-#[cfg(not(feature = "loom"))]
 struct TlsWorkerCache {
     key: usize,
     worker: Option<Arc<cdDB::WorkerState>>,
+    col_payload: Option<Arc<cdDB::ColumnArray<Vec<u8>, 1024>>>,
+    col_epoch: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
+    col_type: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
 }
 
 #[cfg(not(feature = "loom"))]
@@ -115,6 +117,9 @@ thread_local! {
     static WORKER_CACHE: std::cell::RefCell<TlsWorkerCache> = std::cell::RefCell::new(TlsWorkerCache {
         key: 0,
         worker: None,
+        col_payload: None,
+        col_epoch: None,
+        col_type: None,
     });
 }
 
@@ -132,6 +137,9 @@ fn get_worker(route: &Arc<cdDB::PartitionRoute<1024>>) -> Arc<cdDB::WorkerState>
         let w = route.register_worker();
         borrow.key = key;
         borrow.worker = Some(w.clone());
+        borrow.col_payload = None;
+        borrow.col_epoch = None;
+        borrow.col_type = None;
         w
     })
 }
@@ -144,16 +152,72 @@ impl StateStore for PureCacheStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        // Use cdDB high-level Query thread interface with thread-local WorkerState
-        let worker = get_worker(&self.route);
-        let session = cdDB::QuerySession::new(&self.route, &worker);
-        let (payload, epoch, record_type) = session.get_signed_record(entity_id)?;
+        let key = Arc::as_ptr(&self.route.workers) as usize;
 
-        Some(SignedRecord {
-            epoch_id: epoch as EpochId,
-            payload,
-            judge_signature: [0u8; 64],
-            record_type,
+        WORKER_CACHE.with(|cache| {
+            let mut borrow = cache.borrow_mut();
+            if borrow.key != key {
+                let w = self.route.register_worker();
+                borrow.key = key;
+                borrow.worker = Some(w);
+                borrow.col_payload = None;
+                borrow.col_epoch = None;
+                borrow.col_type = None;
+            }
+
+            if borrow.col_payload.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_blob("payload", &w);
+                w.leave();
+                borrow.col_payload = col;
+            }
+            if borrow.col_epoch.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_int("epoch", &w);
+                w.leave();
+                borrow.col_epoch = col;
+            }
+            if borrow.col_type.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_int("type", &w);
+                w.leave();
+                borrow.col_type = col;
+            }
+
+            let col_payload = borrow.col_payload.as_ref()?;
+            let col_epoch = borrow.col_epoch.as_ref()?;
+            let col_type = borrow.col_type.as_ref()?;
+
+            let w = borrow.worker.as_ref().unwrap();
+            w.enter();
+            // Wait-Free RCU pointer load (shared_pointers)
+            let snap = cdDB::unsafe_core::load_ref(&self.route.shared_pointers);
+            let res = if let Some(p) = snap.get(&entity_id) {
+                let _ = self.route.hot_index.get(&entity_id); // Track hit in DualCacheFF
+                
+                // Look up attribute indices in p (this is fast, local to entity pointer)
+                let &payload_idx = p.attribute_indices.get("payload")?;
+                let &epoch_idx = p.attribute_indices.get("epoch")?;
+                let &type_idx = p.attribute_indices.get("type")?;
+
+                let payload = col_payload.get_element_pinned(payload_idx)?;
+                let epoch = col_epoch.get_element_pinned(epoch_idx)?;
+                let record_type = col_type.get_element_pinned(type_idx)?;
+
+                Some(SignedRecord {
+                    epoch_id: epoch as EpochId,
+                    payload,
+                    judge_signature: [0u8; 64],
+                    record_type,
+                })
+            } else {
+                None
+            };
+            w.leave();
+            res
         })
     }
 
@@ -292,16 +356,72 @@ impl StateStore for TieredStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        // Use cdDB high-level Query thread interface with thread-local WorkerState
-        let worker = get_worker(&self.route);
-        let session = cdDB::QuerySession::new(&self.route, &worker);
-        let (payload, epoch, record_type) = session.get_signed_record(entity_id)?;
+        let key = Arc::as_ptr(&self.route.workers) as usize;
 
-        Some(SignedRecord {
-            epoch_id: epoch as EpochId,
-            payload,
-            judge_signature: [0u8; 64],
-            record_type,
+        WORKER_CACHE.with(|cache| {
+            let mut borrow = cache.borrow_mut();
+            if borrow.key != key {
+                let w = self.route.register_worker();
+                borrow.key = key;
+                borrow.worker = Some(w);
+                borrow.col_payload = None;
+                borrow.col_epoch = None;
+                borrow.col_type = None;
+            }
+
+            if borrow.col_payload.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_blob("payload", &w);
+                w.leave();
+                borrow.col_payload = col;
+            }
+            if borrow.col_epoch.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_int("epoch", &w);
+                w.leave();
+                borrow.col_epoch = col;
+            }
+            if borrow.col_type.is_none() {
+                let w = borrow.worker.as_ref().unwrap().clone();
+                w.enter();
+                let col = self.route.get_column_int("type", &w);
+                w.leave();
+                borrow.col_type = col;
+            }
+
+            let col_payload = borrow.col_payload.as_ref()?;
+            let col_epoch = borrow.col_epoch.as_ref()?;
+            let col_type = borrow.col_type.as_ref()?;
+
+            let w = borrow.worker.as_ref().unwrap();
+            w.enter();
+            // Wait-Free RCU pointer load (shared_pointers)
+            let snap = cdDB::unsafe_core::load_ref(&self.route.shared_pointers);
+            let res = if let Some(p) = snap.get(&entity_id) {
+                let _ = self.route.hot_index.get(&entity_id); // Track hit in DualCacheFF
+                
+                // Look up attribute indices in p (this is fast, local to entity pointer)
+                let &payload_idx = p.attribute_indices.get("payload")?;
+                let &epoch_idx = p.attribute_indices.get("epoch")?;
+                let &type_idx = p.attribute_indices.get("type")?;
+
+                let payload = col_payload.get_element_pinned(payload_idx)?;
+                let epoch = col_epoch.get_element_pinned(epoch_idx)?;
+                let record_type = col_type.get_element_pinned(type_idx)?;
+
+                Some(SignedRecord {
+                    epoch_id: epoch as EpochId,
+                    payload,
+                    judge_signature: [0u8; 64],
+                    record_type,
+                })
+            } else {
+                None
+            };
+            w.leave();
+            res
         })
     }
 
