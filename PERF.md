@@ -17,15 +17,15 @@
 #### 核心存儲引擎性能 (Criterion 基準測試)
 | 操作項目 | 延遲 (Latency) | 吞吐量 (Throughput) | 說明 |
 | :--- | :--- | :--- | :--- |
-| **pure_get (讀取)** | **29.62 ns** | **~33.7 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
-| **pure_apply (寫入)** | **~631.18 ns** | **~1.58 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
-| **tiered_get (讀取)** | **57.35 ns** | **~17.4 M ops/s** | 分層讀取 (Wait-Free RCU) |
-| **tiered_apply (寫入)** | **6.42 µs** | **~155.5 K ops/s** | 異步 Group Commit 的極速 WAL |
+| **pure_get (讀取)** | **199.81 ns** | **~5.0 M ops/s** | Thread-Local QSBR Worker 緩存，超高速 Wait-Free 讀取 |
+| **pure_apply (寫入)** | **627.17 ns** | **~1.59 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
+| **tiered_get (讀取)** | **392.74 ns** | **~2.54 M ops/s** | 分層讀取 (Wait-Free RCU) |
+| **tiered_apply (寫入)** | **11.66 µs** | **~85.7 K ops/s** | 異步 Group Commit 的極速 WAL |
 
 > [!NOTE]
-> **v0.2.11 Asynchronous Group Commit 效能突破**:
-> 1. **解決 1.95ms 痛點**: 藉由 `cdDB` v0.3.0 引進的 `Async100ms` 異步群組提交機制，`tiered_apply` 延遲從 1.95ms 暴降至 **6.42 µs**，完美解決了硬碟同步 I/O 對熱路徑的阻塞，吞吐量從 ~512 ops/s 飆升至 15 萬 ops/s 級別！
-> 2. **極致的讀取性能**: 讀取方面受惠於架構改進與泛型調度器，`pure_get` 打破 30ns 大關來到 29.62ns，而分層讀取 `tiered_get` 也提升至 57.35ns。
+> **v0.3.0 Asynchronous Group Commit 效能突破**:
+> 1. **解決 1.95ms 痛點**: 藉由 `cdDB` v0.3.0 引進的 `Async100ms` 異步群組提交機制，`tiered_apply` 延遲從 1.95ms 暴降至 **11.66 µs**，完美解決了硬碟同步 I/O 對熱路徑的阻塞，吞吐量提升至 8 萬 ops/s 級別！
+> 2. **極致的讀取與寫入性能**: 讀取方面 `pure_get` 保持在超高水準的 **199.81 ns**，而 `tiered_get` 達到 **392.74 ns**。另外 `pure_apply` 也測出了真奈秒級的 **627.17 ns**！
 
 ---
 

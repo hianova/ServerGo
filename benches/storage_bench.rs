@@ -10,8 +10,8 @@ fn bench_storage(c: &mut Criterion) {
     let pure_store = PureCacheStore::new(namespace, 512);
     let mut group = c.benchmark_group("storage_pure");
     group.sample_size(10);
-    group.measurement_time(std::time::Duration::from_secs(1));
-    group.warm_up_time(std::time::Duration::from_secs(1));
+    group.measurement_time(std::time::Duration::from_millis(50));
+    group.warm_up_time(std::time::Duration::from_millis(10));
 
     group.bench_function("pure_apply", |b| {
         b.iter(|| {
