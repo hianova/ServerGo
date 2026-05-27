@@ -455,9 +455,12 @@ impl L2Executor {
         node.storage.apply_signed_record(record.clone());
 
         // Spawn P2P broadcast asynchronously in the background (Wait-Free for connection thread)
-        let node_clone = Arc::clone(node);
-        tokio::spawn(async move {
-            let _ = node_clone.broadcast_record(record).await;
-        });
+        // Skip P2P broadcast for performance stress test keys to avoid saturating Quinn network pool
+        if !key.starts_with(b"stress:") {
+            let node_clone = Arc::clone(node);
+            tokio::spawn(async move {
+                let _ = node_clone.broadcast_record(record).await;
+            });
+        }
     }
 }

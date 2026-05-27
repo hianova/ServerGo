@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let addr = format!("{}:{}", args.bind, args.port).parse::<std::net::SocketAddr>().unwrap();
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(131072);
         let gateway = RespGateway::new_with_listener(listener, tx, DefaultRespCommandParser);
         
         info!("Worker 0 listening directly on main runtime at {}", addr);
@@ -273,87 +273,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
-                use resp_rs::resp2::Frame;
-                use io_oi_node::GatewayCommand;
+                let node_clone = Arc::clone(&node_clone);
+                let serial_tx_clone = serial_tx_clone.clone();
+                tokio::spawn(async move {
+                    use resp_rs::resp2::Frame;
+                    use io_oi_node::GatewayCommand;
 
-                info!("[ServerGo Debug] Received request: {:?}", req.cmd);
+                    info!("[ServerGo Debug] Received request: {:?}", req.cmd);
 
-                match req.cmd {
-                    GatewayCommand::Get(key) => {
-                        info!("[ServerGo Debug] L2Executor::get for key: {}", key);
-                        if let Some(val) = L2Executor::get(&node_clone, key.as_bytes()) {
-                            info!("[ServerGo Debug] Found key {} val len {}", key, val.len());
-                            let send_res = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(&val))));
-                            info!("[ServerGo Debug] Response send result: {:?}", send_res);
-                        } else {
-                            info!("[ServerGo Debug] Key {} not found", key);
-                            let send_res = req.response_tx.send(Frame::BulkString(None));
-                            info!("[ServerGo Debug] Response send result: {:?}", send_res);
-                        }
-                    }
-                    GatewayCommand::Put(key, val) => {
-                        info!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
-                        L2Executor::put(&node_clone, key.clone().into_bytes(), val.clone());
-                        info!("[ServerGo Debug] L2Executor::put finished");
-                        
-                        // Forward VM scripts to Gateway Bridge over USB Serial
-                        if key.starts_with("vm:") {
-                            if let Some(ref s_tx) = serial_tx_clone {
-                                let mac = {
-                                    let part = key.strip_prefix("vm:").unwrap_or(&key);
-                                    if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
-                                        [0xFF; 6]
-                                    } else {
-                                        let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                                        if clean.len() == 12 {
-                                            let mut m = [0u8; 6];
-                                            for idx in 0..6 {
-                                                if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
-                                                    m[idx] = b;
-                                                }
-                                            }
-                                            m
-                                        } else {
-                                            [0xFF; 6]
-                                        }
-                                    }
-                                };
-
-                                // 0x40 is OpCode::VmScriptDispatch
-                                let mut payload = Vec::with_capacity(1 + val.len());
-                                payload.push(0x40);
-                                payload.extend_from_slice(&val);
-
-                                let frame = io_oi_core::GatewayFrame {
-                                    mac_addr: mac,
-                                    payload,
-                                };
-
-                                if let Err(e) = s_tx.send(frame).await {
-                                    eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
-                                } else {
-                                    info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
-                                }
+                    match req.cmd {
+                        GatewayCommand::Get(key) => {
+                            info!("[ServerGo Debug] L2Executor::get for key: {}", key);
+                            if let Some(val) = L2Executor::get(&node_clone, key.as_bytes()) {
+                                info!("[ServerGo Debug] Found key {} val len {}", key, val.len());
+                                let send_res = req.response_tx.send(Frame::BulkString(Some(Bytes::copy_from_slice(&val))));
+                                info!("[ServerGo Debug] Response send result: {:?}", send_res);
+                            } else {
+                                info!("[ServerGo Debug] Key {} not found", key);
+                                let send_res = req.response_tx.send(Frame::BulkString(None));
+                                info!("[ServerGo Debug] Response send result: {:?}", send_res);
                             }
                         }
-                        
-                        let send_res = req.response_tx.send(Frame::SimpleString("OK".into()));
-                        info!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);
+                        GatewayCommand::Put(key, val) => {
+                            info!("[ServerGo Debug] L2Executor::put for key: {}, val len: {}", key, val.len());
+                            L2Executor::put(&node_clone, key.clone().into_bytes(), val.clone());
+                            info!("[ServerGo Debug] L2Executor::put finished");
+                            
+                            // Forward VM scripts to Gateway Bridge over USB Serial
+                            if key.starts_with("vm:") {
+                                if let Some(ref s_tx) = serial_tx_clone {
+                                    let mac = {
+                                        let part = key.strip_prefix("vm:").unwrap_or(&key);
+                                        if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
+                                            [0xFF; 6]
+                                        } else {
+                                            let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                                            if clean.len() == 12 {
+                                                let mut m = [0u8; 6];
+                                                for idx in 0..6 {
+                                                    if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
+                                                        m[idx] = b;
+                                                    }
+                                                }
+                                                m
+                                            } else {
+                                                [0xFF; 6]
+                                            }
+                                        }
+                                    };
+
+                                    // 0x40 is OpCode::VmScriptDispatch
+                                    let mut payload = Vec::with_capacity(1 + val.len());
+                                    payload.push(0x40);
+                                    payload.extend_from_slice(&val);
+
+                                    let frame = io_oi_core::GatewayFrame {
+                                        mac_addr: mac,
+                                        payload,
+                                    };
+
+                                    if let Err(e) = s_tx.send(frame).await {
+                                        eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
+                                    } else {
+                                        info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
+                                    }
+                                }
+                            }
+                            
+                            let send_res = req.response_tx.send(Frame::SimpleString("OK".into()));
+                            info!("[ServerGo Debug] Response send result for PUT: {:?}", send_res);
+                        }
+                        GatewayCommand::Info => {
+                            let stats = format!(
+                                "worker_id:{}\r\nversion:0.1.0\r\n",
+                                0
+                            );
+                            let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::from(stats))));
+                        }
+                        GatewayCommand::Ping => {
+                            let _ = req.response_tx.send(Frame::SimpleString("PONG".into()));
+                        }
+                        _ => {
+                            let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
+                        }
                     }
-                    GatewayCommand::Info => {
-                        let stats = format!(
-                            "worker_id:{}\r\nversion:0.1.0\r\n",
-                            0
-                        );
-                        let _ = req.response_tx.send(Frame::BulkString(Some(Bytes::from(stats))));
-                    }
-                    GatewayCommand::Ping => {
-                        let _ = req.response_tx.send(Frame::SimpleString("PONG".into()));
-                    }
-                    _ => {
-                        let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
-                    }
-                }
+                });
             }
         });
 
@@ -391,7 +395,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let listener = TcpListener::from(socket);
                     let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
                     
-                    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+                    let (tx, mut rx) = tokio::sync::mpsc::channel(131072);
                     let gateway = RespGateway::new_with_listener(tokio_listener, tx, DefaultRespCommandParser);
                     
                     info!("Worker {} listening on {}", i, addr);
