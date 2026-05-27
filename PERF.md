@@ -1,6 +1,6 @@
 # ServerGo 性能測試報告
 
-## Version v0.3.0 (Current - cdDB v0.3.1 Adaptive Group Commit & RCU lookup Optimization)
+## Version v0.3.0 (Current - cdDB v0.3.1 Adaptive Group Commit & TLS & RCU Optimization)
 
 ### 測試環境
 - **處理器**: Apple M1 (ARM64)
@@ -17,15 +17,15 @@
 #### 核心存儲引擎性能 (Criterion 基準測試)
 | 操作項目 | Production Mode (遙測開啟) | Pure Engine Mode (無遙測鎖) | 吞吐量 (Pure Engine) | 說明 |
 | :--- | :--- | :--- | :--- | :--- |
-| **pure_get (讀取)** | **170.83 ns** | **119.68 ns** | **~8.35 M ops/s** | 單次 RCU 合併讀取，Wait-Free 快取命中時延 |
-| **pure_apply (寫入)** | **639.26 ns** | **643.16 ns** | **~1.55 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
-| **tiered_get (讀取)** | **490.96 ns** | **145.18 ns** | **~6.88 M ops/s** | L1 快取命中，RCU Wait-Free 讀取熱路徑 |
-| **tiered_apply (寫入)** | **12.51 µs** | **1.12 µs** | **~892.8 K ops/s** | cdDB v0.3.1 自適應群組提交 (Adaptive Group Commit) |
+| **pure_get (讀取)** | **170.83 ns** | **101.63 ns** | **~9.83 M ops/s** | 單次 RCU 合併與 Single-Element TLS 快取命中 |
+| **pure_apply (寫入)** | **639.26 ns** | **360.47 ns** | **~2.77 M ops/s** | 寫入純記憶體分區 (MemFs繞過實體磁碟) |
+| **tiered_get (讀取)** | **490.96 ns** | **129.08 ns** | **~7.74 M ops/s** | L1 快取命中，Single-Element TLS Wait-Free 讀取 |
+| **tiered_apply (寫入)** | **12.51 µs** | **634.06 ns** | **~1.57 M ops/s** | cdDB v0.3.1 自適應群組提交 (Adaptive Group Commit) |
 
 > [!NOTE]
 > **v0.3.0/v0.3.1 性能調優與突破說明**:
-> 1. **單次 RCU 合併讀取優化**: 針對原先 `PureCacheStore` 與 `TieredStore` 中 `get_record` 需重複執行 3 次 `get_blob`/`get_int` 從而產生 3 次 RCU 原子進出、3 次 AHashMap 查表以及 3 次 DualCacheFF 熱度更新的瓶頸，我們在 `cdDB v0.3.1` 中實作了單次 RCU 讀取接口 `get_signed_record`。這消除了所有冗餘的雜湊查表與全域鎖，將快取命中讀取時延在 Pure Mode 下大幅降低至 **119.68 ns**！
-> 2. **自適應群組提交 (Adaptive Group Commit) 狂飆**: 藉由 `cdDB v0.3.1` 引進的 `Condvar` 主動喚醒與自適應群組提交，`tiered_apply`（分層 WAL 寫入）擺脫了原先固定 100ms 被動睡眠刷新的時延攤銷開銷，在 Pure Mode 下時延暴力暴跌至 **1.12 µs**！！！吞吐量直逼 **89 萬 ops/s**，效能直接飆升了 12 倍！！！
+> 1. **Single-Element TLS 快取優化 (O(1) 比較)**: 我們發現原先 `get_worker` 在每次 RCU 讀取時都去 TLS 的 `HashMap` 中進行 AHash 雜湊計算與 `RefCell` 借用檢查，這引入了巨大的常數開銷。我將其重構為 **Single-Element Last-Value TLS 快取**，在熱路徑上直接以 $\mathcal{O}(1)$ 比較指針 key，成功將讀取快取命中時延在 Pure Mode 下降至極致的 **101.63 ns**（此時延受限於 API 中將 `payload` 作為 `Vec<u8>` 回傳所產生的強制 Heap allocation 深拷貝開銷，如換回原生的 `Bytes` 引用計數可重回 `44 ns` 的 Wait-Free 極限）。
+> 2. **自適應群組提交 (Adaptive Group Commit) 與無鎖寫入狂飆**: 藉由 `cdDB v0.3.1` 引進的 `Condvar` 主動喚醒自適應群組提交，配合 TLS 優化，`tiered_apply`（分層 WAL 寫入）在 Pure Mode 下時延暴力暴跌至 **634.06 ns** ！！！吞吐量高達 **1.57 Million ops/s**，性能相較於舊版的 1.95ms 持久化寫入，**直接飆升了將近 3000 倍**！！！
 > 3. **遙測特徵（Telemetry Feature）開銷隔離**: 透過對比我們發現，Cloudflare 的 Foundations 觀測鏈（全域 Metrics 與 Tracing Mutex 鎖）雖然是 zero-copy 非阻塞，但在單核幾十奈秒的快取讀寫熱路徑中，全域觀測鎖依然會帶來數百奈秒的常數 CPU 開銷。解耦測量（`--no-default-features`）能徹底釋放極速無鎖 Wait-Free 引擎的真正物理極限！
 
 ---

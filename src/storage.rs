@@ -105,19 +105,34 @@ impl PureCacheStore {
 
 #[cfg(not(feature = "loom"))]
 #[cfg(not(feature = "loom"))]
+struct TlsWorkerCache {
+    key: usize,
+    worker: Option<Arc<cdDB::WorkerState>>,
+}
+
+#[cfg(not(feature = "loom"))]
 thread_local! {
-    static WORKER_CACHE: std::cell::RefCell<std::collections::HashMap<usize, Arc<cdDB::WorkerState>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static WORKER_CACHE: std::cell::RefCell<TlsWorkerCache> = std::cell::RefCell::new(TlsWorkerCache {
+        key: 0,
+        worker: None,
+    });
 }
 
 #[cfg(not(feature = "loom"))]
 fn get_worker(route: &Arc<cdDB::PartitionRoute<1024>>) -> Arc<cdDB::WorkerState> {
     let key = Arc::as_ptr(&route.workers) as usize;
     WORKER_CACHE.with(|cache| {
-        cache.borrow_mut()
-            .entry(key)
-            .or_insert_with(|| route.register_worker())
-            .clone()
+        let mut borrow = cache.borrow_mut();
+        if borrow.key == key {
+            if let Some(ref w) = borrow.worker {
+                return w.clone();
+            }
+        }
+        
+        let w = route.register_worker();
+        borrow.key = key;
+        borrow.worker = Some(w.clone());
+        w
     })
 }
 
