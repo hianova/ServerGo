@@ -14,7 +14,11 @@ control_mode: competitive
 # Peer Iroh Ticket or Node ID to connect to
 peer: ~
 # Serial port to communicate with the Gateway ESP32
-serial_port: "/dev/cu.usbmodem5ABA0089811"
+serial_port: ~
+# Multiple Serial ports to communicate with multiple Gateway ESP32s
+serial_ports:
+  - "/dev/cu.usbmodem5ABA0089811"
+  - "/dev/cu.usbmodem5ABA0097561"
 # Telemetry settings for the service (logging, metrics, tracing)
 telemetry:
   # Distributed tracing settings

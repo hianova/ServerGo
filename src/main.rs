@@ -75,8 +75,12 @@ pub(crate) struct ServerSettings {
     /// Peer Iroh Ticket or Node ID to connect to
     pub peer: Option<String>,
 
-    /// Serial port to communicate with the Gateway ESP32
+    /// Serial port to communicate with the Gateway ESP32 (Legacy)
     pub serial_port: Option<String>,
+
+    /// Multiple Serial ports to communicate with multiple Gateway ESP32s
+    #[serde(default)]
+    pub serial_ports: Vec<String>,
 
     /// Telemetry settings for the service (logging, metrics, tracing)
     #[serde(default = "default_telemetry")]
@@ -250,14 +254,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Start serial driver if serial_port is provided
-    let serial_tx = if let Some(port) = args.serial_port.clone() {
+    // Start serial drivers if serial_ports are provided
+    let mut serial_txs = Vec::new();
+    if let Some(port) = args.serial_port.clone() {
         let tx = node.start_serial_driver(&port, 115200);
         info!("Serial driver started on port: {}", port);
-        Some(tx)
-    } else {
-        None
-    };
+        serial_txs.push(tx);
+    }
+    for port in &args.serial_ports {
+        let tx = node.start_serial_driver(port, 115200);
+        info!("Serial driver started on port: {}", port);
+        serial_txs.push(tx);
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -269,12 +277,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Worker 0 listening directly on main runtime at {}", addr);
 
         let node_clone = Arc::clone(&node);
-        let serial_tx_clone = serial_tx.clone();
+        let serial_txs_clone = serial_txs.clone();
         
         tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 let node_clone = Arc::clone(&node_clone);
-                let serial_tx_clone = serial_tx_clone.clone();
+                let serial_txs_clone = serial_txs_clone.clone();
                 tokio::spawn(async move {
                     use resp_rs::resp2::Frame;
                     use io_oi_node::GatewayCommand;
@@ -299,44 +307,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let is_vm = key.starts_with("vm:");
                             
                             // Forward VM scripts to Gateway Bridge over USB Serial
-                            if is_vm {
-                                if let Some(ref s_tx) = serial_tx_clone {
-                                    let mac = {
-                                        let part = key.strip_prefix("vm:").unwrap_or(&key);
-                                        if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
-                                            [0xFF; 6]
-                                        } else {
-                                            let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                                            if clean.len() == 12 {
-                                                let mut m = [0u8; 6];
-                                                for idx in 0..6 {
-                                                    if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
-                                                        m[idx] = b;
-                                                    }
-                                                }
-                                                m
-                                            } else {
-                                                [0xFF; 6]
-                                            }
-                                        }
-                                    };
-
-                                    // 0x40 is OpCode::VmScriptDispatch
-                                    let mut payload = Vec::with_capacity(1 + val.len());
-                                    payload.push(0x40);
-                                    payload.extend_from_slice(&val);
-
-                                    let frame = io_oi_core::GatewayFrame {
-                                        mac_addr: mac,
-                                        payload,
-                                    };
-
-                                    if let Err(e) = s_tx.send(frame).await {
-                                        eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
+                            if is_vm && !serial_txs_clone.is_empty() {
+                                let mac = {
+                                    let part = key.strip_prefix("vm:").unwrap_or(&key);
+                                    if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
+                                        [0xFF; 6]
                                     } else {
-                                        info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
+                                        let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                                        if clean.len() == 12 {
+                                            let mut m = [0u8; 6];
+                                            for idx in 0..6 {
+                                                if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
+                                                    m[idx] = b;
+                                                }
+                                            }
+                                            m
+                                        } else {
+                                            [0xFF; 6]
+                                        }
+                                    }
+                                };
+
+                                // 0x40 is OpCode::VmScriptDispatch
+                                let mut payload = Vec::with_capacity(1 + val.len());
+                                payload.push(0x40);
+                                payload.extend_from_slice(&val);
+
+                                let frame = io_oi_core::GatewayFrame {
+                                    mac_addr: mac,
+                                    payload,
+                                };
+
+                                for s_tx in &serial_txs_clone {
+                                    if let Err(e) = s_tx.send(frame.clone()).await {
+                                        eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
                                     }
                                 }
+                                info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?} via {} serial ports", mac, serial_txs_clone.len());
                             }
                             
                             L2Executor::put(&node_clone, key.into_bytes(), val);
@@ -376,7 +383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let node_clone = Arc::clone(&node);
             let bind_addr = args.bind.clone();
             let port = args.port;
-            let serial_tx_clone = serial_tx.clone();
+            let serial_txs_clone = serial_txs.clone();
             
             let handle = std::thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -427,44 +434,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let is_vm = key.starts_with("vm:");
                                     
                                     // Forward VM scripts to Gateway Bridge over USB Serial
-                                    if is_vm {
-                                        if let Some(ref s_tx) = serial_tx_clone {
-                                            let mac = {
-                                                let part = key.strip_prefix("vm:").unwrap_or(&key);
-                                                if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
-                                                    [0xFF; 6]
-                                                } else {
-                                                    let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                                                    if clean.len() == 12 {
-                                                        let mut m = [0u8; 6];
-                                                        for idx in 0..6 {
-                                                            if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
-                                                                m[idx] = b;
-                                                            }
-                                                        }
-                                                        m
-                                                    } else {
-                                                        [0xFF; 6]
-                                                    }
-                                                }
-                                            };
-
-                                            // 0x40 is OpCode::VmScriptDispatch
-                                            let mut payload = Vec::with_capacity(1 + val.len());
-                                            payload.push(0x40);
-                                            payload.extend_from_slice(&val);
-
-                                            let frame = io_oi_core::GatewayFrame {
-                                                mac_addr: mac,
-                                                payload,
-                                            };
-
-                                            if let Err(e) = s_tx.send(frame).await {
-                                                eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
+                                    if is_vm && !serial_txs_clone.is_empty() {
+                                        let mac = {
+                                            let part = key.strip_prefix("vm:").unwrap_or(&key);
+                                            if part.eq_ignore_ascii_case("broadcast") || part.eq_ignore_ascii_case("all") {
+                                                [0xFF; 6]
                                             } else {
-                                                info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?}", mac);
+                                                let clean: String = part.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+                                                if clean.len() == 12 {
+                                                    let mut m = [0u8; 6];
+                                                    for idx in 0..6 {
+                                                        if let Ok(b) = u8::from_str_radix(&clean[idx*2..idx*2+2], 16) {
+                                                            m[idx] = b;
+                                                        }
+                                                    }
+                                                    m
+                                                } else {
+                                                    [0xFF; 6]
+                                                }
+                                            }
+                                        };
+
+                                        // 0x40 is OpCode::VmScriptDispatch
+                                        let mut payload = Vec::with_capacity(1 + val.len());
+                                        payload.push(0x40);
+                                        payload.extend_from_slice(&val);
+
+                                        let frame = io_oi_core::GatewayFrame {
+                                            mac_addr: mac,
+                                            payload,
+                                        };
+
+                                        for s_tx in &serial_txs_clone {
+                                            if let Err(e) = s_tx.send(frame.clone()).await {
+                                                eprintln!("[ServerGo] Failed to forward VM script frame to serial: {:?}", e);
                                             }
                                         }
+                                        info!("[ServerGo] Forwarded VM script frame to MAC: {:02X?} via {} serial ports", mac, serial_txs_clone.len());
                                     }
                                     
                                     L2Executor::put(&node_clone, key.into_bytes(), val);
