@@ -3250,27 +3250,38 @@ dependencies = [
 
 [[package]]
 name = "io_oi_core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bytecheck",
  "ed25519-dalek 2.2.0",
  "rand 0.8.6",
  "rkyv",
+ "serde",
  "sha2 0.10.9",
 ]
 
 [[package]]
+name = "io_oi_engine"
+version = "0.3.0"
+dependencies = [
+ "dashmap 5.5.3",
+ "dualcache-ff",
+ "io_oi_core",
+ "rkyv",
+]
+
+[[package]]
 name = "io_oi_node"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytecheck",
  "bytes",
  "dashmap 5.5.3",
- "dualcache-ff",
  "ed25519-dalek 2.2.0",
  "futures-util",
  "io_oi_core",
+ "io_oi_engine",
  "iroh",
  "rand 0.8.6",
  "resp-rs",

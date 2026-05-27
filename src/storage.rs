@@ -161,9 +161,19 @@ impl StateStore for PureCacheStore {
         attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
         attrs_int.insert("type".to_string(), record.record_type);
 
+        let mut h = [0u8; 32];
+        if record.payload.len() >= 32 {
+            h.copy_from_slice(&record.payload[0..32]);
+        } else {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&record.payload);
+            h = hasher.finalize().into();
+        }
+
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
-        hasher.write(&record.payload);
+        hasher.write(&h);
         let entity_id = hasher.finish() as usize;
 
         let _ = self.db_writer.send(WriteCommand::Insert {
@@ -305,9 +315,19 @@ impl StateStore for TieredStore {
         attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
         attrs_int.insert("type".to_string(), record.record_type);
 
+        let mut h = [0u8; 32];
+        if record.payload.len() >= 32 {
+            h.copy_from_slice(&record.payload[0..32]);
+        } else {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&record.payload);
+            h = hasher.finalize().into();
+        }
+
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
-        hasher.write(&record.payload);
+        hasher.write(&h);
         let entity_id = hasher.finish() as usize;
 
         // cdDB 0.2.3 send is synchronous and wait-free

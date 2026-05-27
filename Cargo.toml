@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2024"
 
 [dependencies]
-io_oi_core = { version = "0.2.1", path = "../io_oi/core" }
+io_oi_core = { version = "0.3.0", path = "../io_oi/core" }
 io_oi_node = { path = "../io_oi/node", features = ["serial"] }
 cdDB = { version = "0.3.0", path = "../cdDB" }
 serde = { version = "1.0", features = ["derive"] }
