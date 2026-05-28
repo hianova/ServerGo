@@ -54,8 +54,10 @@ To achieve clean separation of concerns and maximum throughput, ServerGo is stru
 pub trait StateStore: Send + Sync {
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord>;
     fn apply_signed_record(&self, record: SignedRecord);
+    fn apply_signed_records(&self, records: Vec<SignedRecord>);
     fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord>;
     fn prune(&self, current_epoch: EpochId, k: u64);
+    fn flush(&self);
 }
 ```
 

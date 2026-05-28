@@ -1,4 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use pprof::criterion::{PProfProfiler, Output};
 use ServerGo::storage::{PureCacheStore, TieredStore};
 use io_oi_core::{SignedRecord, Hash32, StateStore};
 use cdDB::CdDBDispatcher;
@@ -39,7 +40,7 @@ fn bench_storage(c: &mut Criterion) {
         record_type: 0,
     };
     pure_store.apply_signed_record(record);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // Ensure async commit completes
+    pure_store.flush();
 
     let mut group_read = c.benchmark_group("storage_pure_read");
     group_read.sample_size(100);
@@ -85,7 +86,7 @@ fn bench_storage(c: &mut Criterion) {
         record_type: 0,
     };
     tiered_store.apply_signed_record(record_t);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // Ensure async commit completes
+    tiered_store.flush();
 
     let mut group_read_t = c.benchmark_group("storage_tiered_read");
     group_read_t.sample_size(100);
@@ -97,7 +98,16 @@ fn bench_storage(c: &mut Criterion) {
         })
     });
     group_read_t.finish();
+
+    drop(tiered_store);
+    drop(db);
+    let _ = std::fs::remove_dir_all("data_bench");
+    let _ = std::fs::remove_dir_all("data");
 }
 
-criterion_group!(benches, bench_storage);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
+    targets = bench_storage
+}
 criterion_main!(benches);

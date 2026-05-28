@@ -9,26 +9,8 @@ mod tests {
     use bytes::Bytes;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    struct MockStore {
-        records: Mutex<HashMap<Hash32, SignedRecord>>,
-    }
-
-    impl StateStore for MockStore {
-        fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
-            self.records.lock().unwrap().get(hash).cloned()
-        }
-        fn apply_signed_record(&self, record: SignedRecord) {
-            let mut h = [0u8; 32];
-            if record.payload.len() >= 32 {
-                h.copy_from_slice(&record.payload[0..32]);
-            }
-            self.records.lock().unwrap().insert(h, record);
-        }
-        fn get_by_epoch(&self, _: u64) -> Vec<SignedRecord> {
-            vec![]
-        }
-        fn prune(&self, _: u64, _: u64) {}
-    }
+    use ServerGo::storage::TieredStore;
+    use cdDB::CdDBDispatcher;
 
     struct SimpleParser;
     impl RespCommandParser for SimpleParser {
@@ -69,9 +51,8 @@ mod tests {
     async fn test_resp_server() {
         let namespace: [u8; 32] = [0xAA; 32];
         let local_id: [u8; 32] = [1; 32];
-        let storage = MockStore {
-            records: Mutex::new(HashMap::new()),
-        };
+        let mut db = CdDBDispatcher::<1024>::new_std(Some("data_test".to_string()));
+        let storage = TieredStore::new(namespace, 512, &mut db, "test_partition".to_string());
 
         let genesis_cfg = GenesisConfig {
             namespace,
@@ -148,8 +129,16 @@ mod tests {
         assert!(String::from_utf8_lossy(&buf[..n]).contains("OK"));
 
         // Test GET
+        tokio::time::sleep(Duration::from_millis(5)).await;
         stream.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").await.unwrap();
         let n = stream.read(&mut buf).await.unwrap();
         assert!(String::from_utf8_lossy(&buf[..n]).contains("$1\r\nv\r\n"));
+
+        // Clean up
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = std::fs::remove_dir_all("data_test");
+        let _ = std::fs::remove_dir_all("data");
+        let _ = std::fs::remove_file("leader_wal.log");
     }
 }

@@ -70,6 +70,7 @@ pub struct PureCacheStore {
     _db: Arc<std::sync::Mutex<CdDBDispatcher<1024>>>,
     db_writer: Arc<UserWriter>,
     route: Arc<PartitionRoute<1024>>,
+    hot_index: Arc<cddb_helper::GlobalHotIndex>,
 }
 
 struct MemFs;
@@ -99,65 +100,176 @@ impl PureCacheStore {
             _db: Arc::new(std::sync::Mutex::new(db)),
             db_writer: Arc::new(writer),
             route,
+            hot_index: Arc::new(cddb_helper::GlobalHotIndex::new(262144)),
         }
     }
 }
 
 #[cfg(not(feature = "loom"))]
-struct TlsWorkerCache {
-    key: usize,
-    worker: Option<Arc<cdDB::WorkerState>>,
-    col_payload: Option<Arc<cdDB::ColumnArray<Vec<u8>, 1024>>>,
-    col_epoch: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
-    col_type: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
-}
+impl StateStore for PureCacheStore {
+    fn apply_signed_record(&self, record: SignedRecord) {
+        let mut h = [0u8; 32];
+        if record.payload.len() >= 32 {
+            h.copy_from_slice(&record.payload[0..32]);
+        } else {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&record.payload);
+            h = hasher.finalize().into();
+        }
 
-#[cfg(not(feature = "loom"))]
-thread_local! {
-    static WORKER_CACHE: std::cell::RefCell<TlsWorkerCache> = std::cell::RefCell::new(TlsWorkerCache {
-        key: 0,
-        worker: None,
-        col_payload: None,
-        col_epoch: None,
-        col_type: None,
-    });
-}
+        let mut hasher = ahash::AHasher::default();
+        use std::hash::Hasher;
+        hasher.write(&h);
+        let entity_id = hasher.finish() as usize;
 
-#[cfg(not(feature = "loom"))]
-fn get_worker(route: &Arc<cdDB::PartitionRoute<1024>>) -> Arc<cdDB::WorkerState> {
-    let key = Arc::as_ptr(&route.workers) as usize;
-    WORKER_CACHE.with(|cache| {
-        let mut borrow = cache.borrow_mut();
-        if borrow.key == key {
-            if let Some(ref w) = borrow.worker {
-                return w.clone();
+        let epoch_id = record.epoch_id;
+        let record_type = record.record_type;
+        let judge_signature = record.judge_signature;
+
+        let payload_arc = std::sync::Arc::new(record.payload);
+        
+        let record_ptr = Box::into_raw(Box::new(cddb_helper::CachedRecord {
+            epoch_id,
+            record_type,
+            judge_signature,
+            payload: payload_arc.clone(),
+        }));
+
+        let val = (1u64 << 60) | (record_ptr as u64 & 0x0FFF_FFFF_FFFF_FFFF);
+        let old_val = self.hot_index.set(entity_id, val);
+
+        if (old_val >> 60) == 1 {
+            let old_ptr = (old_val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
+            unsafe {
+                let _ = Box::from_raw(old_ptr);
             }
         }
-        
-        let w = route.register_worker();
-        borrow.key = key;
-        borrow.worker = Some(w.clone());
-        borrow.col_payload = None;
-        borrow.col_epoch = None;
-        borrow.col_type = None;
-        w
-    })
-}
 
-#[cfg(not(feature = "loom"))]
-impl StateStore for PureCacheStore {
+        let _ = self.db_writer.try_send(cdDB::commands::WriteCommand::InsertFast {
+            entity_id,
+            epoch: payload_arc.len() as u32,
+            record_type: 0,
+            payload: payload_arc,
+        });
+    }
+
+    fn get_by_epoch(&self, _epoch_id: EpochId) -> Vec<SignedRecord> {
+        Vec::new()
+    }
+
+    fn prune(&self, _current_epoch: EpochId, _k: u64) {}
+
+    fn flush(&self) {}
+
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        let key = Arc::as_ptr(&self.route.workers) as usize;
+        let val = self.hot_index.get(entity_id);
+        if (val >> 60) == 1 {
+            let ptr = (val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
+            unsafe {
+                let cached = &*ptr;
+                Some(SignedRecord {
+                    epoch_id: cached.epoch_id,
+                    record_type: cached.record_type,
+                    judge_signature: cached.judge_signature,
+                    payload: cached.payload.as_ref().clone(),
+                })
+            }
+        } else {
+            None
+        }
+    }
+}
+
+
+#[cfg(not(feature = "loom"))]
+pub(crate) mod cddb_helper {
+    use super::*;
+    use cdDB::commands::WriteCommand;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub struct GlobalHotIndex {
+        table: Vec<AtomicU64>,
+        mask: usize,
+    }
+
+    impl GlobalHotIndex {
+        pub fn new(capacity: usize) -> Self {
+            assert!(capacity.is_power_of_two(), "Capacity must be power of 2");
+            let mut table = Vec::with_capacity(capacity);
+            for _ in 0..capacity {
+                table.push(AtomicU64::new(0));
+            }
+            Self { table, mask: capacity - 1 }
+        }
+
+        pub fn get(&self, hash: usize) -> u64 {
+            self.table[hash & self.mask].load(Ordering::Acquire)
+        }
+
+        pub fn set(&self, hash: usize, val: u64) -> u64 {
+            self.table[hash & self.mask].swap(val, Ordering::AcqRel)
+        }
+    }
+
+    pub struct CachedRecord {
+        pub epoch_id: io_oi_core::EpochId,
+        pub record_type: u32,
+        pub judge_signature: [u8; 64],
+        pub payload: Arc<Vec<u8>>,
+    }
+
+    struct TlsWorkerCache {
+        key: usize,
+        worker: Option<Arc<cdDB::WorkerState>>,
+        col_payload: Option<Arc<cdDB::ColumnArray<Vec<u8>, 1024>>>,
+        col_epoch: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
+        col_type: Option<Arc<cdDB::ColumnArray<u32, 1024>>>,
+    }
+
+    thread_local! {
+        static WORKER_CACHE: std::cell::RefCell<TlsWorkerCache> = std::cell::RefCell::new(TlsWorkerCache {
+            key: 0,
+            worker: None,
+            col_payload: None,
+            col_epoch: None,
+            col_type: None,
+        });
+    }
+
+    pub fn get_worker(route: &Arc<PartitionRoute<1024>>) -> Arc<cdDB::WorkerState> {
+        let key = Arc::as_ptr(route) as usize;
+        WORKER_CACHE.with(|cache| {
+            let mut borrow = cache.borrow_mut();
+            if borrow.key == key {
+                if let Some(ref w) = borrow.worker {
+                    return w.clone();
+                }
+            }
+            
+            let w = route.register_worker();
+            borrow.key = key;
+            borrow.worker = Some(w.clone());
+            borrow.col_payload = None;
+            borrow.col_epoch = None;
+            borrow.col_type = None;
+            w
+        })
+    }
+
+    pub fn get_record_from_route(route: &Arc<PartitionRoute<1024>>, entity_id: usize) -> Option<SignedRecord> {
+        let key = Arc::as_ptr(route) as usize;
 
         WORKER_CACHE.with(|cache| {
             let mut borrow = cache.borrow_mut();
             if borrow.key != key {
-                let w = self.route.register_worker();
+                let w = route.register_worker();
                 borrow.key = key;
                 borrow.worker = Some(w);
                 borrow.col_payload = None;
@@ -168,21 +280,21 @@ impl StateStore for PureCacheStore {
             if borrow.col_payload.is_none() {
                 let w = borrow.worker.as_ref().unwrap().clone();
                 w.enter();
-                let col = self.route.get_column_blob("payload", &w);
+                let col = route.get_column_blob("payload", &w);
                 w.leave();
                 borrow.col_payload = col;
             }
             if borrow.col_epoch.is_none() {
                 let w = borrow.worker.as_ref().unwrap().clone();
                 w.enter();
-                let col = self.route.get_column_int("epoch", &w);
+                let col = route.get_column_int("epoch", &w);
                 w.leave();
                 borrow.col_epoch = col;
             }
             if borrow.col_type.is_none() {
                 let w = borrow.worker.as_ref().unwrap().clone();
                 w.enter();
-                let col = self.route.get_column_int("type", &w);
+                let col = route.get_column_int("type", &w);
                 w.leave();
                 borrow.col_type = col;
             }
@@ -194,9 +306,9 @@ impl StateStore for PureCacheStore {
             let w = borrow.worker.as_ref().unwrap();
             w.enter();
             // Wait-Free RCU pointer load (shared_pointers)
-            let snap = cdDB::unsafe_core::load_ref(&self.route.shared_pointers);
+            let snap = cdDB::unsafe_core::load_ref(&route.shared_pointers);
             let res = if let Some(p) = snap.get(&entity_id) {
-                let _ = self.route.hot_index.get(&entity_id); // Track hit in DualCacheFF
+                let _ = route.hot_index.get(&entity_id); // Track hit in DualCacheFF
                 
                 // Look up attribute indices in p (this is fast, local to entity pointer)
                 let &payload_idx = p.attribute_indices.get("payload")?;
@@ -220,12 +332,86 @@ impl StateStore for PureCacheStore {
             res
         })
     }
+}
+
+
+
+// ==========================================
+// 2. Tiered Store Definition
+// ==========================================
+
+
+
+#[cfg(not(feature = "loom"))]
+/// Tiered Storage Backend using cdDB 0.2.3 (Wait-Free RCU + Native Blob)
+#[derive(Clone)]
+pub struct TieredStore {
+    db_writer: Arc<UserWriter>,
+    route: Arc<PartitionRoute<1024>>,
+    hot_index: Arc<cddb_helper::GlobalHotIndex>,
+}
+
+#[cfg(not(feature = "loom"))]
+impl TieredStore {
+    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher<1024>, partition: String) -> Self {
+        // cdDB 0.2.3 register_partition_with_wal returns a synchronous UserWriter with persistence
+        let wal_path = format!("data/{}.wal", partition);
+        let writer = db.register_partition_with_wal(partition.clone(), Some(wal_path), cdDB::WalMode::Async100ms);
+        let route = db.get_route(&partition).unwrap().clone();
+        
+        Self {
+            db_writer: Arc::new(writer),
+            route,
+            hot_index: Arc::new(cddb_helper::GlobalHotIndex::new(262144)),
+        }
+    }
+}
+
+
+
+#[cfg(not(feature = "loom"))]
+impl StateStore for TieredStore {
+    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
+        let mut hasher = ahash::AHasher::default();
+        use std::hash::Hasher;
+        hasher.write(hash);
+        let entity_id = hasher.finish() as usize;
+
+        let val = self.hot_index.get(entity_id);
+        if (val >> 60) == 1 {
+            crate::metrics::db_metrics::cache_hits().inc();
+            let ptr = (val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
+            unsafe {
+                let cached = &*ptr;
+                return Some(SignedRecord {
+                    epoch_id: cached.epoch_id,
+                    record_type: cached.record_type,
+                    judge_signature: cached.judge_signature,
+                    payload: cached.payload.as_ref().clone(),
+                });
+            }
+        }
+
+        crate::metrics::db_metrics::cache_misses().inc();
+        
+        let worker = cddb_helper::get_worker(&self.route);
+        let session = cdDB::QuerySession::new(&self.route, &worker);
+        
+        if let Some(payload) = session.get_blob(entity_id, "payload") {
+            let epoch_id = session.get_int(entity_id, "epoch").unwrap_or(0) as EpochId;
+            let record_type = session.get_int(entity_id, "type").unwrap_or(0);
+            Some(SignedRecord {
+                epoch_id,
+                payload,
+                judge_signature: [0u8; 64],
+                record_type,
+            })
+        } else {
+            None
+        }
+    }
 
     fn apply_signed_record(&self, record: SignedRecord) {
-        let mut attrs_int = Attributes::new();
-        attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
-        attrs_int.insert("type".to_string(), record.record_type);
-
         let mut h = [0u8; 32];
         if record.payload.len() >= 32 {
             h.copy_from_slice(&record.payload[0..32]);
@@ -236,24 +422,45 @@ impl StateStore for PureCacheStore {
             h = hasher.finalize().into();
         }
 
-        let mut attrs_blob = Attributes::new();
-        attrs_blob.insert("payload".to_string(), record.payload);
-
         let mut hasher = ahash::AHasher::default();
         use std::hash::Hasher;
         hasher.write(&h);
         let entity_id = hasher.finish() as usize;
 
-        let _ = self.db_writer.send(WriteCommand::Insert {
+        let epoch = record.epoch_id as u32;
+        let record_type = record.record_type;
+        let epoch_id = record.epoch_id;
+        let judge_signature = record.judge_signature;
+
+        let payload_arc = std::sync::Arc::new(record.payload);
+        
+        let record_ptr = Box::into_raw(Box::new(cddb_helper::CachedRecord {
+            epoch_id,
+            record_type,
+            judge_signature,
+            payload: payload_arc.clone(),
+        }));
+
+        let val = (1u64 << 60) | (record_ptr as u64 & 0x0FFF_FFFF_FFFF_FFFF);
+        let old_val = self.hot_index.set(entity_id, val);
+
+        if (old_val >> 60) == 1 {
+            let old_ptr = (old_val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
+            unsafe {
+                let _ = Box::from_raw(old_ptr);
+            }
+        }
+
+        let _ = self.db_writer.try_send(cdDB::commands::WriteCommand::InsertFast {
             entity_id,
-            attributes: Attributes::new(),
-            attributes_int: attrs_int,
-            attributes_blob: attrs_blob,
+            epoch,
+            record_type,
+            payload: payload_arc,
         });
     }
 
     fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
-        let worker = get_worker(&self.route);
+        let worker = cddb_helper::get_worker(&self.route);
         let mut records = Vec::new();
         let session = cdDB::QuerySession::new(&self.route, &worker);
         for entity_id in session.entities_iter() {
@@ -275,222 +482,11 @@ impl StateStore for PureCacheStore {
     }
 
     fn prune(&self, _current_epoch: EpochId, _k: u64) {
-        // No-op for cache pruning
-    }
-}
-
-// ==========================================
-// 2. Tiered Store Definition
-// ==========================================
-
-#[cfg(feature = "loom")]
-#[derive(Clone)]
-pub struct TieredStore {
-    cache: PureCacheStore,
-}
-
-#[cfg(feature = "loom")]
-impl TieredStore {
-    pub fn new(namespace: Hash32, ram_mb: usize, _db: &mut CdDBDispatcher<1024>, _partition: String) -> Self {
-        Self {
-            cache: PureCacheStore::new(namespace, ram_mb),
-        }
-    }
-}
-
-#[cfg(feature = "loom")]
-impl StateStore for TieredStore {
-    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
-        self.cache.get_record(hash)
     }
 
-    fn apply_signed_record(&self, record: SignedRecord) {
-        self.cache.apply_signed_record(record);
-    }
-
-    fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
-        self.cache.get_by_epoch(epoch_id)
-    }
-
-    fn prune(&self, current_epoch: EpochId, k: u64) {
-        self.cache.prune(current_epoch, k);
-    }
-}
-
-#[cfg(not(feature = "loom"))]
-/// Tiered Storage Backend using cdDB 0.2.3 (Wait-Free RCU + Native Blob)
-#[derive(Clone)]
-pub struct TieredStore {
-    cache: PureCacheStore,
-    db_writer: Arc<UserWriter>,
-    route: Arc<PartitionRoute<1024>>,
-}
-
-#[cfg(not(feature = "loom"))]
-impl TieredStore {
-    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher<1024>, partition: String) -> Self {
-        // cdDB 0.2.3 register_partition_with_wal returns a synchronous UserWriter with persistence
-        let wal_path = format!("data/{}.wal", partition);
-        let writer = db.register_partition_with_wal(partition.clone(), Some(wal_path), cdDB::WalMode::Async100ms);
-        let route = db.get_route(&partition).unwrap().clone();
-        
-        Self {
-            cache: PureCacheStore::new(namespace, ram_mb),
-            db_writer: Arc::new(writer),
-            route,
-        }
-    }
-}
-
-#[cfg(not(feature = "loom"))]
-impl StateStore for TieredStore {
-    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
-        // 1. Try cache first
-        if let Some(record) = self.cache.get_record(hash) {
-            return Some(record);
-        }
-
-        // 2. Cache miss, try cdDB
-        let mut hasher = ahash::AHasher::default();
-        use std::hash::Hasher;
-        hasher.write(hash);
-        let entity_id = hasher.finish() as usize;
-
-        let key = Arc::as_ptr(&self.route.workers) as usize;
-
-        WORKER_CACHE.with(|cache| {
-            let mut borrow = cache.borrow_mut();
-            if borrow.key != key {
-                let w = self.route.register_worker();
-                borrow.key = key;
-                borrow.worker = Some(w);
-                borrow.col_payload = None;
-                borrow.col_epoch = None;
-                borrow.col_type = None;
-            }
-
-            if borrow.col_payload.is_none() {
-                let w = borrow.worker.as_ref().unwrap().clone();
-                w.enter();
-                let col = self.route.get_column_blob("payload", &w);
-                w.leave();
-                borrow.col_payload = col;
-            }
-            if borrow.col_epoch.is_none() {
-                let w = borrow.worker.as_ref().unwrap().clone();
-                w.enter();
-                let col = self.route.get_column_int("epoch", &w);
-                w.leave();
-                borrow.col_epoch = col;
-            }
-            if borrow.col_type.is_none() {
-                let w = borrow.worker.as_ref().unwrap().clone();
-                w.enter();
-                let col = self.route.get_column_int("type", &w);
-                w.leave();
-                borrow.col_type = col;
-            }
-
-            let col_payload = borrow.col_payload.as_ref()?;
-            let col_epoch = borrow.col_epoch.as_ref()?;
-            let col_type = borrow.col_type.as_ref()?;
-
-            let w = borrow.worker.as_ref().unwrap();
-            w.enter();
-            // Wait-Free RCU pointer load (shared_pointers)
-            let snap = cdDB::unsafe_core::load_ref(&self.route.shared_pointers);
-            let res = if let Some(p) = snap.get(&entity_id) {
-                let _ = self.route.hot_index.get(&entity_id); // Track hit in DualCacheFF
-                
-                // Look up attribute indices in p (this is fast, local to entity pointer)
-                let &payload_idx = p.attribute_indices.get("payload")?;
-                let &epoch_idx = p.attribute_indices.get("epoch")?;
-                let &type_idx = p.attribute_indices.get("type")?;
-
-                let payload = col_payload.get_element_pinned(payload_idx)?;
-                let epoch = col_epoch.get_element_pinned(epoch_idx)?;
-                let record_type = col_type.get_element_pinned(type_idx)?;
-
-                Some(SignedRecord {
-                    epoch_id: epoch as EpochId,
-                    payload,
-                    judge_signature: [0u8; 64],
-                    record_type,
-                })
-            } else {
-                None
-            };
-            w.leave();
-            res
-        })
-    }
-
-    fn apply_signed_record(&self, record: SignedRecord) {
-        // 1. Write to Cache (Write-through)
-        self.cache.apply_signed_record(record.clone());
-
-        // 2. Write to cdDB (Async Persistence)
-        let mut attrs_int = Attributes::new();
-        attrs_int.insert("epoch".to_string(), record.epoch_id as u32);
-        attrs_int.insert("type".to_string(), record.record_type);
-
-        let mut h = [0u8; 32];
-        if record.payload.len() >= 32 {
-            h.copy_from_slice(&record.payload[0..32]);
-        } else {
-            use sha2::{Sha256, Digest};
-            let mut hasher = Sha256::new();
-            hasher.update(&record.payload);
-            h = hasher.finalize().into();
-        }
-
-        let mut attrs_blob = Attributes::new();
-        attrs_blob.insert("payload".to_string(), record.payload);
-
-        let mut hasher = ahash::AHasher::default();
-        use std::hash::Hasher;
-        hasher.write(&h);
-        let entity_id = hasher.finish() as usize;
-
-        // cdDB 0.2.3 send is synchronous and wait-free
-        let _ = self.db_writer.send(WriteCommand::Insert {
-            entity_id,
-            attributes: Attributes::new(),
-            attributes_int: attrs_int,
-            attributes_blob: attrs_blob,
-        });
-    }
-
-    fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
-        // Try cache first
-        let cache_records = self.cache.get_by_epoch(epoch_id);
-        if !cache_records.is_empty() {
-            return cache_records;
-        }
-
-        let worker = get_worker(&self.route);
-        let mut records = Vec::new();
-        let session = cdDB::QuerySession::new(&self.route, &worker);
-        for entity_id in session.entities_iter() {
-            if let Some(epoch) = session.get_int(entity_id, "epoch") {
-                if epoch as EpochId == epoch_id {
-                    if let Some(payload) = session.get_blob(entity_id, "payload") {
-                        let record_type = session.get_int(entity_id, "type").unwrap_or(0);
-                        records.push(SignedRecord {
-                            epoch_id,
-                            payload,
-                            judge_signature: [0u8; 64],
-                            record_type,
-                        });
-                    }
-                }
-            }
-        }
-        records
-    }
-
-    fn prune(&self, current_epoch: EpochId, k: u64) {
-        self.cache.prune(current_epoch, k);
+    fn flush(&self) {
+        // Sleep to give cdDB's Async100ms WAL flusher time to sync
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
 }
 
