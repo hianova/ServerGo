@@ -1,69 +1,15 @@
 use io_oi_core::{EpochId, Hash32, SignedRecord, StateStore};
 use cdDB::CdDBDispatcher;
 
-#[cfg(feature = "loom")]
-use loom::sync::Arc;
-#[cfg(feature = "loom")]
-use loom::sync::Mutex;
-#[cfg(feature = "loom")]
-use std::collections::HashMap;
-#[cfg(feature = "loom")]
-use std::collections::hash_map::DefaultHasher;
-
-#[cfg(not(feature = "loom"))]
 use cdDB::{
-    Attributes, PartitionRoute, UserWriter, WriteCommand,
+    Attributes, PartitionRoute, UserWriter,
 };
-#[cfg(not(feature = "loom"))]
 use std::sync::Arc;
 
 // ==========================================
 // 1. Pure Cache Store Definition
 // ==========================================
 
-#[cfg(feature = "loom")]
-#[derive(Clone)]
-pub struct PureCacheStore {
-    map: Arc<Mutex<HashMap<Hash32, SignedRecord>>>,
-}
-
-#[cfg(feature = "loom")]
-impl PureCacheStore {
-    pub fn new(_namespace: Hash32, _ram_mb: usize) -> Self {
-        Self {
-            map: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-}
-
-#[cfg(feature = "loom")]
-impl StateStore for PureCacheStore {
-    fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
-        let guard = self.map.lock().unwrap();
-        guard.get(hash).cloned()
-    }
-
-    fn apply_signed_record(&self, record: SignedRecord) {
-        let mut hasher = DefaultHasher::new();
-        use std::hash::Hasher;
-        hasher.write(&record.payload);
-        let h = hasher.finish();
-        let mut hash = [0u8; 32];
-        hash[..8].copy_from_slice(&h.to_be_bytes());
-
-        let mut guard = self.map.lock().unwrap();
-        guard.insert(hash, record);
-    }
-
-    fn get_by_epoch(&self, epoch_id: EpochId) -> Vec<SignedRecord> {
-        let guard = self.map.lock().unwrap();
-        guard.values().filter(|r| r.epoch_id == epoch_id).cloned().collect()
-    }
-
-    fn prune(&self, _current_epoch: EpochId, _k: u64) {}
-}
-
-#[cfg(not(feature = "loom"))]
 /// Pure Cache Backend using cdDB in memory-only mode (No-WAL)
 #[derive(Clone)]
 pub struct PureCacheStore {
@@ -83,7 +29,6 @@ impl cdDB::platform::FileSystem for MemFs {
     fn read_dir(&self, _path: &str) -> Result<Vec<String>, String> { Ok(Vec::new()) }
 }
 
-#[cfg(not(feature = "loom"))]
 impl PureCacheStore {
     pub fn new(_namespace: Hash32, _ram_mb: usize) -> Self {
         // Create a truly in-memory CdDBDispatcher bypassing the disk by using /dev/null/invalid_path
@@ -105,7 +50,6 @@ impl PureCacheStore {
     }
 }
 
-#[cfg(not(feature = "loom"))]
 impl StateStore for PureCacheStore {
     fn apply_signed_record(&self, record: SignedRecord) {
         let mut h = [0u8; 32];
@@ -129,22 +73,14 @@ impl StateStore for PureCacheStore {
 
         let payload_arc = std::sync::Arc::new(record.payload);
         
-        let record_ptr = Box::into_raw(Box::new(cddb_helper::CachedRecord {
+        let record_arc = std::sync::Arc::new(cddb_helper::CachedRecord {
             epoch_id,
             record_type,
             judge_signature,
             payload: payload_arc.clone(),
-        }));
+        });
 
-        let val = (1u64 << 60) | (record_ptr as u64 & 0x0FFF_FFFF_FFFF_FFFF);
-        let old_val = self.hot_index.set(entity_id, val);
-
-        if (old_val >> 60) == 1 {
-            let old_ptr = (old_val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
-            unsafe {
-                let _ = Box::from_raw(old_ptr);
-            }
-        }
+        self.hot_index.set(entity_id, record_arc);
 
         let _ = self.db_writer.try_send(cdDB::commands::WriteCommand::InsertFast {
             entity_id,
@@ -168,18 +104,13 @@ impl StateStore for PureCacheStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        let val = self.hot_index.get(entity_id);
-        if (val >> 60) == 1 {
-            let ptr = (val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
-            unsafe {
-                let cached = &*ptr;
-                Some(SignedRecord {
-                    epoch_id: cached.epoch_id,
-                    record_type: cached.record_type,
-                    judge_signature: cached.judge_signature,
-                    payload: cached.payload.as_ref().clone(),
-                })
-            }
+        if let Some(cached) = self.hot_index.get(entity_id) {
+            Some(SignedRecord {
+                epoch_id: cached.epoch_id,
+                record_type: cached.record_type,
+                judge_signature: cached.judge_signature,
+                payload: cached.payload.as_ref().clone(),
+            })
         } else {
             None
         }
@@ -187,15 +118,14 @@ impl StateStore for PureCacheStore {
 }
 
 
-#[cfg(not(feature = "loom"))]
 pub(crate) mod cddb_helper {
     use super::*;
-    use cdDB::commands::WriteCommand;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use arc_swap::ArcSwapOption;
 
     pub struct GlobalHotIndex {
-        table: Vec<AtomicU64>,
+        table: Vec<ArcSwapOption<CachedRecord>>,
         mask: usize,
     }
 
@@ -204,17 +134,17 @@ pub(crate) mod cddb_helper {
             assert!(capacity.is_power_of_two(), "Capacity must be power of 2");
             let mut table = Vec::with_capacity(capacity);
             for _ in 0..capacity {
-                table.push(AtomicU64::new(0));
+                table.push(ArcSwapOption::const_empty());
             }
             Self { table, mask: capacity - 1 }
         }
 
-        pub fn get(&self, hash: usize) -> u64 {
-            self.table[hash & self.mask].load(Ordering::Acquire)
+        pub fn get(&self, hash: usize) -> Option<Arc<CachedRecord>> {
+            self.table[hash & self.mask].load_full()
         }
 
-        pub fn set(&self, hash: usize, val: u64) -> u64 {
-            self.table[hash & self.mask].swap(val, Ordering::AcqRel)
+        pub fn set(&self, hash: usize, record: Arc<CachedRecord>) {
+            self.table[hash & self.mask].store(Some(record));
         }
     }
 
@@ -308,7 +238,7 @@ pub(crate) mod cddb_helper {
             // Wait-Free RCU pointer load (shared_pointers)
             let snap = cdDB::unsafe_core::load_ref(&route.shared_pointers);
             let res = if let Some(p) = snap.get(&entity_id) {
-                let _ = route.hot_index.get(&entity_id); // Track hit in DualCacheFF
+                let _ = route.hot_index.get(&(0, entity_id)); // Track hit in DualCacheFF
                 
                 // Look up attribute indices in p (this is fast, local to entity pointer)
                 let &payload_idx = p.attribute_indices.get("payload")?;
@@ -342,7 +272,6 @@ pub(crate) mod cddb_helper {
 
 
 
-#[cfg(not(feature = "loom"))]
 /// Tiered Storage Backend using cdDB 0.2.3 (Wait-Free RCU + Native Blob)
 #[derive(Clone)]
 pub struct TieredStore {
@@ -351,12 +280,10 @@ pub struct TieredStore {
     hot_index: Arc<cddb_helper::GlobalHotIndex>,
 }
 
-#[cfg(not(feature = "loom"))]
 impl TieredStore {
-    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher<1024>, partition: String) -> Self {
+    pub fn new(namespace: Hash32, ram_mb: usize, db: &mut CdDBDispatcher<1024>, partition: String, wal_path: Option<String>) -> Self {
         // cdDB 0.2.3 register_partition_with_wal returns a synchronous UserWriter with persistence
-        let wal_path = format!("data/{}.wal", partition);
-        let writer = db.register_partition_with_wal(partition.clone(), Some(wal_path), cdDB::WalMode::Async100ms);
+        let writer = db.register_partition_with_wal(partition.clone(), wal_path, cdDB::WalMode::Async100ms);
         let route = db.get_route(&partition).unwrap().clone();
         
         Self {
@@ -369,7 +296,6 @@ impl TieredStore {
 
 
 
-#[cfg(not(feature = "loom"))]
 impl StateStore for TieredStore {
     fn get_record(&self, hash: &Hash32) -> Option<SignedRecord> {
         let mut hasher = ahash::AHasher::default();
@@ -377,19 +303,14 @@ impl StateStore for TieredStore {
         hasher.write(hash);
         let entity_id = hasher.finish() as usize;
 
-        let val = self.hot_index.get(entity_id);
-        if (val >> 60) == 1 {
+        if let Some(cached) = self.hot_index.get(entity_id) {
             crate::metrics::db_metrics::cache_hits().inc();
-            let ptr = (val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
-            unsafe {
-                let cached = &*ptr;
-                return Some(SignedRecord {
-                    epoch_id: cached.epoch_id,
-                    record_type: cached.record_type,
-                    judge_signature: cached.judge_signature,
-                    payload: cached.payload.as_ref().clone(),
-                });
-            }
+            return Some(SignedRecord {
+                epoch_id: cached.epoch_id,
+                record_type: cached.record_type,
+                judge_signature: cached.judge_signature,
+                payload: cached.payload.as_ref().clone(),
+            });
         }
 
         crate::metrics::db_metrics::cache_misses().inc();
@@ -434,22 +355,14 @@ impl StateStore for TieredStore {
 
         let payload_arc = std::sync::Arc::new(record.payload);
         
-        let record_ptr = Box::into_raw(Box::new(cddb_helper::CachedRecord {
+        let record_arc = std::sync::Arc::new(cddb_helper::CachedRecord {
             epoch_id,
             record_type,
             judge_signature,
             payload: payload_arc.clone(),
-        }));
+        });
 
-        let val = (1u64 << 60) | (record_ptr as u64 & 0x0FFF_FFFF_FFFF_FFFF);
-        let old_val = self.hot_index.set(entity_id, val);
-
-        if (old_val >> 60) == 1 {
-            let old_ptr = (old_val & 0x0FFF_FFFF_FFFF_FFFF) as *mut cddb_helper::CachedRecord;
-            unsafe {
-                let _ = Box::from_raw(old_ptr);
-            }
-        }
+        self.hot_index.set(entity_id, record_arc);
 
         let _ = self.db_writer.try_send(cdDB::commands::WriteCommand::InsertFast {
             entity_id,
@@ -494,42 +407,9 @@ impl StateStore for TieredStore {
 // 3. L2 Execution Layer Definition
 // ==========================================
 
-#[cfg(feature = "loom")]
-pub struct L2Executor;
-
-#[cfg(feature = "loom")]
-impl L2Executor {
-    pub fn get(node: &io_oi_node::Node, key: &[u8]) -> Option<Vec<u8>> {
-        let mut hasher = DefaultHasher::new();
-        use std::hash::Hasher;
-        hasher.write(key);
-        let mut hash = [0u8; 32];
-        let bytes = hasher.finish().to_be_bytes();
-        hash[..8].copy_from_slice(&bytes);
-
-        if let Some(record) = node.storage.get_record(&hash) {
-            Some(record.payload)
-        } else {
-            None
-        }
-    }
-
-    pub fn put(node: &std::sync::Arc<io_oi_node::Node>, _key: Vec<u8>, val: Vec<u8>) {
-        let record = io_oi_core::SignedRecord {
-            epoch_id: 0,
-            payload: val,
-            judge_signature: [0u8; 64],
-            record_type: 100,
-        };
-        node.storage.apply_signed_record(record);
-    }
-}
-
-#[cfg(not(feature = "loom"))]
 /// L2 Execution Layer - Coordinates business logic, caching, and persistence
 pub struct L2Executor;
 
-#[cfg(not(feature = "loom"))]
 impl L2Executor {
     /// L2 Get - queries cdDB tiered storage under a safe QSBR pin
     pub fn get(node: &io_oi_node::Node, key: &[u8]) -> Option<Vec<u8>> {
@@ -581,4 +461,59 @@ impl L2Executor {
             });
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use io_oi_core::SignedRecord;
+
+    #[test]
+    fn test_global_hot_index() {
+        let index = cddb_helper::GlobalHotIndex::new(4);
+        let record = std::sync::Arc::new(cddb_helper::CachedRecord {
+            epoch_id: 1,
+            record_type: 100,
+            judge_signature: [0u8; 64],
+            payload: std::sync::Arc::new(vec![1, 2, 3]),
+        });
+        
+        index.set(5, record.clone());
+        let fetched = index.get(5).unwrap();
+        assert_eq!(fetched.epoch_id, 1);
+        
+        // collision overwrites (since it's a simple hash table)
+        let record2 = std::sync::Arc::new(cddb_helper::CachedRecord {
+            epoch_id: 2,
+            record_type: 100,
+            judge_signature: [0u8; 64],
+            payload: std::sync::Arc::new(vec![4, 5, 6]),
+        });
+        index.set(9, record2.clone()); // 9 & 3 == 5 & 3 == 1
+        let fetched2 = index.get(5).unwrap(); // should get record2
+        assert_eq!(fetched2.epoch_id, 2);
+    }
+
+    #[test]
+    fn test_tiered_get_by_epoch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_path = temp_dir.path().join("data").to_str().unwrap().to_string();
+        let mut db = cdDB::CdDBDispatcher::<1024>::new_std(Some(data_path));
+        let store = TieredStore::new([0u8; 32], 512, &mut db, "test".to_string(), None);
+        
+        store.apply_signed_record(SignedRecord {
+            epoch_id: 42,
+            payload: vec![1, 2, 3],
+            judge_signature: [0u8; 64],
+            record_type: 10,
+        });
+        
+        store.flush();
+        let records = store.get_by_epoch(42);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].payload, vec![1, 2, 3]);
+    }
+
+    // A dummy Node definition for L2Executor testing
+    // Since Node is from io_oi_node which depends on ServerGo, we cannot instantiate a real Node here easily without cyclic dependency issues or complex mocks. But we can test L2 logic conceptually.
 }

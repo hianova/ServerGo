@@ -15,9 +15,9 @@ fn bench_storage(c: &mut Criterion) {
 
     // 1.a Pure Cache Write (Short measurement time to avoid large Vec clone overhead)
     let mut group_write = c.benchmark_group("storage_pure_write");
-    group_write.sample_size(10);
-    group_write.measurement_time(std::time::Duration::from_millis(50));
-    group_write.warm_up_time(std::time::Duration::from_millis(10));
+    group_write.sample_size(50);
+    group_write.measurement_time(std::time::Duration::from_secs(2));
+    group_write.warm_up_time(std::time::Duration::from_millis(500));
     group_write.bench_function("pure_apply", |b| {
         b.iter(|| {
             let record = SignedRecord {
@@ -51,19 +51,30 @@ fn bench_storage(c: &mut Criterion) {
             pure_store.get_record(black_box(&hash));
         })
     });
+    group_read.bench_function("pure_get_random", |b| {
+        let mut rng = rand::thread_rng();
+        use rand::Rng;
+        b.iter(|| {
+            let mut h: Hash32 = [0u8; 32];
+            rng.fill(&mut h);
+            pure_store.get_record(black_box(&h));
+        })
+    });
     group_read.finish();
 
     // ==========================================
     // 2. Tiered Store Benchmarks
     // ==========================================
-    let mut db = CdDBDispatcher::<1024>::new_std(Some("data_bench".to_string()));
-    let tiered_store = TieredStore::new(namespace, 512, &mut db, "bench_partition".to_string());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let data_path = temp_dir.path().join("data_bench").to_str().unwrap().to_string();
+    let mut db = CdDBDispatcher::<1024>::new_std(Some(data_path));
+    let tiered_store = TieredStore::new(namespace, 512, &mut db, "bench_partition".to_string(), None);
 
     // 2.a Tiered Write (Short measurement time to avoid channel saturation / disk bottleneck)
     let mut group_write_t = c.benchmark_group("storage_tiered_write");
-    group_write_t.sample_size(10);
-    group_write_t.measurement_time(std::time::Duration::from_millis(50));
-    group_write_t.warm_up_time(std::time::Duration::from_millis(10));
+    group_write_t.sample_size(50);
+    group_write_t.measurement_time(std::time::Duration::from_secs(2));
+    group_write_t.warm_up_time(std::time::Duration::from_millis(500));
     group_write_t.bench_function("tiered_apply", |b| {
         b.iter(|| {
             let record = SignedRecord {
@@ -97,12 +108,20 @@ fn bench_storage(c: &mut Criterion) {
             tiered_store.get_record(black_box(&hash));
         })
     });
+    group_read_t.bench_function("tiered_get_random", |b| {
+        let mut rng = rand::thread_rng();
+        use rand::Rng;
+        b.iter(|| {
+            let mut h: Hash32 = [0u8; 32];
+            rng.fill(&mut h);
+            tiered_store.get_record(black_box(&h));
+        })
+    });
     group_read_t.finish();
 
     drop(tiered_store);
     drop(db);
-    let _ = std::fs::remove_dir_all("data_bench");
-    let _ = std::fs::remove_dir_all("data");
+    // temp_dir cleans up automatically
 }
 
 criterion_group! {

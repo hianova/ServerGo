@@ -8,7 +8,7 @@ def test_distributed_sync():
     
     # 1. Start Node 1 (Port 6379)
     print("Starting Node 1...")
-    node1 = subprocess.Popen(["cargo", "run", "--", "--id", "1", "--port", "6379", "--trust-mode", "full"], 
+    node1 = subprocess.Popen(["./target/release/ServerGo", "--id", "1", "--port", "6379", "--trust-mode", "full"], 
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     time.sleep(5) # Wait for node to start and iroh to bind
     
@@ -21,7 +21,7 @@ def test_distributed_sync():
     # or we can extract the PeerId from logs.
     
     print("Starting Node 2...")
-    node2 = subprocess.Popen(["cargo", "run", "--", "--id", "2", "--port", "6380", "--trust-mode", "full"],
+    node2 = subprocess.Popen(["./target/release/ServerGo", "--id", "2", "--port", "6380", "--trust-mode", "full"],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     time.sleep(5)
 

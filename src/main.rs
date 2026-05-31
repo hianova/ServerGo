@@ -194,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.budget,
             &mut db,
             format!("server_go.node_{}", args.id),
+            Some(format!("data/server_go.node_{}.wal", args.id)),
         );
         _db_holder = Some(db);
         store
@@ -249,6 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trust_mode,
         control_mode,
         genesis_url: None,
+        wal_path: None,
     };
 
     let node = Arc::new(genesis(genesis_cfg, endpoint, storage));
@@ -290,12 +292,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serial_txs_clone = serial_txs.clone();
         let settings_clone = Arc::new(settings.clone());
         
-        tokio::spawn(async move {
+        let local = tokio::task::LocalSet::new();
+        local.spawn_local(async move {
             while let Some(req) = rx.recv().await {
                 let node_clone = Arc::clone(&node_clone);
                 let serial_txs_clone = serial_txs_clone.clone();
                 let settings_clone = Arc::clone(&settings_clone);
-                tokio::spawn(async move {
+                tokio::task::spawn_local(async move {
                     use resp_rs::resp2::Frame;
                     use io_oi_node::GatewayCommand;
 
@@ -402,7 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        gateway.run().await.unwrap();
+        local.run_until(gateway.run()).await.unwrap();
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -419,12 +422,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let settings_clone = Arc::new(settings.clone());
             
             let handle = std::thread::spawn(move || {
+                core_affinity::set_for_current(core_affinity::CoreId { id: i });
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .expect("Failed to build tokio runtime");
                     
-                rt.block_on(async move {
+                let local = tokio::task::LocalSet::new();
+                rt.block_on(local.run_until(async move {
                     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
                     socket.set_reuse_address(true).unwrap();
                     #[cfg(unix)]
@@ -444,13 +449,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let settings_clone = Arc::clone(&settings_clone);
 
-                    tokio::spawn(async move {
+                    tokio::task::spawn_local(async move {
                         while let Some(req) = rx.recv().await {
                             let node_clone = Arc::clone(&node_clone);
                             use resp_rs::resp2::Frame;
                             use io_oi_node::GatewayCommand;
 
-                            info!("[ServerGo Debug] Received request: {:?}", req.cmd);
+                            tokio::task::spawn_local(async move {
+                                info!("[ServerGo Debug] Received request: {:?}", req.cmd);
 
                             match req.cmd {
                                 GatewayCommand::Get(key) => {
@@ -549,11 +555,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let _ = req.response_tx.send(Frame::Error("Unknown command".into()));
                                 }
                             }
+                            });
                         }
                     });
 
                     gateway.run().await.unwrap();
-                });
+                }));
             });
             handles.push(handle);
         }

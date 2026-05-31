@@ -57,3 +57,23 @@ This document lists the third-party dependencies used by ServerGo along with the
     - Version: 4.5
     - License: Apache License 2.0 or MIT License
     - Repository: https://github.com/clap-rs/clap
+
+12. Arc-Swap
+    - Version: 1.7
+    - License: Apache License 2.0 or MIT License
+    - Repository: https://github.com/vorner/arc-swap
+
+13. Rand
+    - Version: 0.8
+    - License: Apache License 2.0 or MIT License
+    - Repository: https://github.com/rust-random/rand
+
+14. Tempfile
+    - Version: 3.8
+    - License: Apache License 2.0 or MIT License
+    - Repository: https://github.com/Stebalien/tempfile
+
+15. Rkyv
+    - Version: 0.8
+    - License: MIT License
+    - Repository: https://github.com/rkyv/rkyv

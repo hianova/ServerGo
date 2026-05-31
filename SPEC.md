@@ -31,6 +31,7 @@ To achieve clean separation of concerns and maximum throughput, ServerGo is stru
     - **`L2Executor`**: The decoupled L2 execution boundary that coordinates business logic, caching, and persistence.
     - **`PureCacheStore`**: In-memory only mode using `cdDB` with WAL disabled (`NoopWal`), delivering wait-free in-memory query processing.
     - **`TieredStore`**: Write-through memory-cache utilizing a persistent `cdDB` partition with WAL enabled for transaction-safe disk durability.
+    - **Wait-Free GlobalHotIndex**: Replaced dynamic lock-based HashMaps with a highly-concurrent `arc_swap::ArcSwapOption` based bounded array (`GlobalHotIndex`) for L1 hot cache lookups, ensuring zero-lock multi-threaded reads.
     - **Zero-Hash & Zero-Copy TLS Wait-Free RCU**: We leverage a thread-local worker state cache intertwined with pre-resolved `cdDB` Column Array pointers. By directly loading from `col_payload`, `col_epoch`, and `col_type` entirely inside the TLS context, we completely bypass `QuerySession` object creation, `Arc` reference atomic operations, and dynamic `AHashMap` string lookups, achieving physical limit `~62ns` read access latency.
     - **Zero-Copy Persistence**: Data is passed to `cdDB` as raw bytes, eliminating hex-string allocation overhead.
 
@@ -167,6 +168,14 @@ To ensure reliable production deployments and comprehensive cluster health monit
    - `cache_hits`: Monotonic counter tracking cache lookup hits in the memory layer.
    - `cache_misses`: Monotonic counter tracking cache lookup misses requiring backend storage lookups.
 4. **Wait-Free Background Telemetry Driver**: The telemetry driver future (`TelemetryDriver`) is spawned asynchronously on the `tokio` event loop, ensuring that log/metric ingestion and HTTP scraping do not interfere with hot-path RCU query execution or P2P broadcast latencies.
+
+## Testing & Benchmarking Strategy
+
+ServerGo relies on a robust and isolated test suite to ensure correctness without corrupting local filesystems:
+1. **Isolated Filesystems**: All `TieredStore` and `cdDB` testing instances dynamically allocate ephemeral directories using `tempfile::tempdir()`, completely isolating WAL writes and preventing test leakage on the host disk.
+2. **Dynamic Networking**: Integration tests utilize `TcpListener::bind("127.0.0.1:0")` for deterministic parallel execution without `AddrInUse` port collisions.
+3. **High-Confidence Benchmarks**: Criterion benchmarks operate with high sample sizes and extended durations (e.g., 2 seconds) to reduce statistical noise. They utilize `rand::Rng` generation to simulate rigorous cache-miss scenarios during benchmarking.
+4. **Concurrent Loom Models**: Critical Wait-Free structures like `GlobalHotIndex` are explicitly modeled and validated using Tokio's `loom` framework, verifying lock-free memory safety under extreme thread interleaving.
 
 ## Performance Claims
 

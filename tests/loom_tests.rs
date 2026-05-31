@@ -2,32 +2,27 @@
 mod tests {
     use loom::sync::Arc;
     use loom::thread;
-    use io_oi_core::{SignedRecord, StateStore};
-    use ServerGo::storage::PureCacheStore;
-
-    type Hash32 = [u8; 32];
+    use ServerGo::storage::cddb_helper::{GlobalHotIndex, CachedRecord};
 
     #[test]
-    fn test_concurrent_apply_and_get() {
+    fn test_concurrent_hot_index() {
         loom::model(|| {
-            let namespace: Hash32 = [0xAA; 32];
-            let store = Arc::new(PureCacheStore::new(namespace, 1));
+            let index = Arc::new(GlobalHotIndex::new(4));
 
-            let store_clone: Arc<PureCacheStore> = Arc::clone(&store);
+            let index_clone1 = Arc::clone(&index);
             let t1 = thread::spawn(move || {
-                let record = SignedRecord {
+                let record = Arc::new(CachedRecord {
                     epoch_id: 1,
-                    payload: vec![1, 2, 3],
+                    record_type: 100,
                     judge_signature: [0u8; 64],
-                    record_type: 0,
-                };
-                store_clone.apply_signed_record(record);
+                    payload: Arc::new(vec![1, 2, 3]),
+                });
+                index_clone1.set(1, record);
             });
 
-            let store_clone2: Arc<PureCacheStore> = Arc::clone(&store);
+            let index_clone2 = Arc::clone(&index);
             let t2 = thread::spawn(move || {
-                let hash = [0u8; 32];
-                let _ = store_clone2.get_record(&hash);
+                let _ = index_clone2.get(1);
             });
 
             t1.join().unwrap();

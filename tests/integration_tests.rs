@@ -2,10 +2,8 @@
 mod tests {
     use io_oi_node::{RespGateway, RespCommandParser, GatewayCommand, GatewayRequest, genesis};
     use io_oi_core::{GenesisConfig, Hash32, SignedRecord, StateStore, TrustMode, ControlMode};
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use tokio::time::Duration;
+        use std::sync::Arc;
+        use tokio::time::Duration;
     use bytes::Bytes;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -28,6 +26,8 @@ mod tests {
                             _ => return Err("Err".into()),
                         };
                         Ok(GatewayCommand::Get(key))
+                    } else if cmd_bytes.eq_ignore_ascii_case(b"PING") {
+                        Ok(GatewayCommand::Ping)
                     } else if cmd_bytes.eq_ignore_ascii_case(b"SET") {
                         let key = match &arr[1] {
                             Frame::BulkString(Some(s)) => String::from_utf8_lossy(s).into_owned(),
@@ -49,10 +49,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_resp_server() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_path = temp_dir.path().join("data_test").to_str().unwrap().to_string();
+        
         let namespace: [u8; 32] = [0xAA; 32];
         let local_id: [u8; 32] = [1; 32];
-        let mut db = CdDBDispatcher::<1024>::new_std(Some("data_test".to_string()));
-        let storage = TieredStore::new(namespace, 512, &mut db, "test_partition".to_string());
+        let mut db = CdDBDispatcher::<1024>::new_std(Some(data_path));
+        let storage = TieredStore::new(namespace, 512, &mut db, "test_partition".to_string(), None);
 
         let genesis_cfg = GenesisConfig {
             namespace,
@@ -62,6 +65,7 @@ mod tests {
             trust_mode: TrustMode::Full,
             control_mode: ControlMode::Competitive,
             genesis_url: None,
+            wal_path: None,
         };
 
         let secret_key = iroh::SecretKey::generate();
@@ -72,8 +76,9 @@ mod tests {
             .unwrap();
 
         let node = Arc::new(genesis(genesis_cfg, endpoint, storage));
-        let port = 16380;
-        let addr = format!("127.0.0.1:{}", port);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
         let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayRequest>(100);
         let node_clone = Arc::clone(&node);
 
@@ -109,6 +114,12 @@ mod tests {
                         });
                         let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
                     }
+                    GatewayCommand::Ping => {
+                        let _ = req.response_tx.send(Frame::SimpleString("PONG".into()));
+                    }
+                    GatewayCommand::Info => {
+                        let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
+                    }
                     _ => {
                         let _ = req.response_tx.send(Frame::SimpleString("OK".into()));
                     }
@@ -129,16 +140,26 @@ mod tests {
         assert!(String::from_utf8_lossy(&buf[..n]).contains("OK"));
 
         // Test GET
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         stream.write_all(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n").await.unwrap();
         let n = stream.read(&mut buf).await.unwrap();
         assert!(String::from_utf8_lossy(&buf[..n]).contains("$1\r\nv\r\n"));
 
-        // Clean up
+        
+        // Test PING
+        stream.write_all(b"*1\r\n$4\r\nPING\r\n").await.unwrap();
+        let mut buf2 = [0u8; 1024];
+        let n = stream.read(&mut buf2).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf2[..n]).contains("+PONG"));
+
+        // Test INFO
+        stream.write_all(b"*1\r\n$4\r\nINFO\r\n").await.unwrap();
+        let n = stream.read(&mut buf2).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf2[..n]).contains("+OK"));
+
+        // Clean up handled automatically by temp_dir going out of scope
+
         drop(stream);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = std::fs::remove_dir_all("data_test");
-        let _ = std::fs::remove_dir_all("data");
-        let _ = std::fs::remove_file("leader_wal.log");
     }
 }

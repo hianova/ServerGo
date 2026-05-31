@@ -59,7 +59,7 @@ Description=ServerGo Storage Node
 After=network.target
 
 [Service]
-ExecStart=/opt/servergo/ServerGo --port 6379 --id 1
+ExecStart=/opt/servergo/ServerGo --config /opt/servergo/config.yaml
 Restart=always
 LimitNOFILE=65535
 
@@ -84,11 +84,17 @@ To start multiple nodes and form a decentralized cluster:
 
 Example Cluster Command:
 ```bash
+# First, generate base config files
+./ServerGo --generate node1.yaml
+./ServerGo --generate node2.yaml
+
+# Edit node2.yaml to include peer: <NODE_1_IROH_ID>
+
 # Node 1
-./ServerGo --id 1 --port 6379
+./ServerGo --config node1.yaml
 
 # Node 2
-./ServerGo --id 2 --port 6380 --peer <NODE_1_IROH_ID>
+./ServerGo --config node2.yaml
 ```
 
 ## 6. Verification
